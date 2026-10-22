@@ -68,7 +68,6 @@ class WorkflowService:
         workflow_run_repository: WorkflowRunRepository = Depends(),
         source_asset_service: SourceAssetService = Depends(),
     ):
-        self.imagen_service = ImagenService()
         self.workflow_repository = workflow_repository
         self.workflow_run_repository = workflow_run_repository
         self.source_asset_service = source_asset_service

@@ -434,7 +434,7 @@ export const MODEL_CONFIGS: GenerationModelConfig[] = [
     icon: 'music_note',
     capabilities: {
       supportedModes: ['Text to Audio'],
-      maxReferenceImages: 0,
+      maxReferenceImages: 10,
       supportedAspectRatios: [],
       supportedResolutions: [],
       supportedDurations: [],
@@ -451,7 +451,7 @@ export const MODEL_CONFIGS: GenerationModelConfig[] = [
     icon: 'music_note',
     capabilities: {
       supportedModes: ['Text to Audio'],
-      maxReferenceImages: 0,
+      maxReferenceImages: 10,
       supportedAspectRatios: [],
       supportedResolutions: [],
       supportedDurations: [],

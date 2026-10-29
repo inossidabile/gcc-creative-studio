@@ -44,7 +44,13 @@ from src.common.base_dto import (
     MimeTypeEnum,
 )
 from src.common.schema.genai_model_setup import GenAIModelSetup
-from src.common.schema.media_item_model import JobStatusEnum, MediaItemModel
+from src.common.schema.media_item_model import (
+    AssetRoleEnum,
+    JobStatusEnum,
+    MediaItemModel,
+    SourceAssetLink,
+    SourceMediaItemLink,
+)
 from src.common.storage_service import GcsService
 from src.config.config_service import config_service
 from src.folders.agent_output_folder import resolve_agent_output_folder_id
@@ -54,6 +60,10 @@ from src.brand_guidelines.repository.brand_guideline_repository import (
     BrandGuidelineRepository,
 )
 from src.multimodal.gemini_service import GeminiService
+from src.source_assets.repository.source_asset_repository import (
+    SourceAssetRepository,
+)
+from src.source_assets.schema.source_asset_model import AssetScopeEnum
 from src.users.user_model import UserModel
 
 logger = logging.getLogger(__name__)
@@ -70,6 +80,92 @@ def _build_lyria3_prompt(request_dto: CreateAudioDto) -> str:
     if negative:
         prompt = f"{prompt}\n\nAvoid: {negative}"
     return prompt
+
+
+async def _resolve_lyria3_reference_images(
+    request_dto: CreateAudioDto,
+    media_repo: MediaRepository,
+    source_asset_repo: SourceAssetRepository,
+) -> tuple[
+    list[dict[str, str]],
+    list[SourceAssetLink],
+    list[SourceMediaItemLink],
+]:
+    """Validates and resolves uploaded/gallery reference images for Lyria 3.
+
+    Enforces workspace isolation (or ``SYSTEM`` scope for source assets) and
+    ensures every referenced URI has an ``image/*`` MIME type.
+    """
+    image_inputs: list[dict[str, str]] = []
+    source_assets: list[SourceAssetLink] = []
+    source_media_items: list[SourceMediaItemLink] = []
+
+    for asset_id in request_dto.source_asset_ids or []:
+        source_asset = await source_asset_repo.get_by_id(asset_id)
+        if not source_asset or (
+            source_asset.workspace_id != request_dto.workspace_id
+            and source_asset.scope != AssetScopeEnum.SYSTEM
+        ):
+            raise ValueError(
+                f"Source asset {asset_id} was not found in this workspace."
+            )
+        mime_val = (
+            source_asset.mime_type.value
+            if hasattr(source_asset.mime_type, "value")
+            else str(source_asset.mime_type or "")
+        )
+        if not source_asset.gcs_uri or not mime_val.startswith("image/"):
+            raise ValueError(
+                f"Source asset {asset_id} is not a valid image asset."
+            )
+        source_assets.append(
+            SourceAssetLink(asset_id=asset_id, role=AssetRoleEnum.INPUT)
+        )
+        image_inputs.append(
+            {
+                "type": "image",
+                "mime_type": mime_val,
+                "uri": source_asset.gcs_uri,
+            }
+        )
+
+    for gen_input in request_dto.source_media_items or []:
+        parent_item = await media_repo.get_by_id(gen_input.media_item_id)
+        if (
+            not parent_item
+            or parent_item.workspace_id != request_dto.workspace_id
+        ):
+            raise ValueError(
+                f"Media item {gen_input.media_item_id} was not found in this workspace."
+            )
+        if not parent_item.gcs_uris or not (
+            0 <= gen_input.media_index < len(parent_item.gcs_uris)
+        ):
+            raise ValueError(
+                f"Media item {gen_input.media_item_id} index {gen_input.media_index} is out of bounds."
+            )
+        mime_val = (
+            parent_item.mime_type.value
+            if hasattr(parent_item.mime_type, "value")
+            else str(parent_item.mime_type or "")
+        )
+        if not mime_val.startswith("image/"):
+            raise ValueError(
+                f"Media item {gen_input.media_item_id} is not an image item."
+            )
+        gcs_uri = parent_item.gcs_uris[gen_input.media_index]
+        source_media_items.append(
+            SourceMediaItemLink(
+                media_item_id=gen_input.media_item_id,
+                media_index=gen_input.media_index,
+                role=AssetRoleEnum.INPUT,
+            )
+        )
+        image_inputs.append(
+            {"type": "image", "mime_type": mime_val, "uri": gcs_uri}
+        )
+
+    return image_inputs, source_assets, source_media_items
 
 
 # Vertex returns HTTP 400 with ``code: content_blocked`` when Lyria 3's policy
@@ -230,6 +326,8 @@ def _process_audio_in_background(
                         output_mime_type = MimeTypeEnum.AUDIO_WAV
                         # Set when a reworded prompt (not the user's) rendered.
                         effective_prompt: str | None = None
+                        source_assets: list[SourceAssetLink] = []
+                        source_media_items: list[SourceMediaItemLink] = []
 
                         if request_dto.model in AudioService.GEMINI_MODELS:
                             client = GenAIModelSetup.init()
@@ -380,7 +478,24 @@ def _process_audio_in_background(
                         elif request_dto.model in AudioService.LYRIA_3_MODELS:
                             # Lyria 3 is only exposed through the Interactions
                             # API on the global endpoint (no :predict support).
+                            lyria3_image_inputs: list[dict[str, str]] = []
+                            if (
+                                request_dto.source_asset_ids
+                                or request_dto.source_media_items
+                            ):
+                                source_asset_repo = SourceAssetRepository(db)
+                                (
+                                    lyria3_image_inputs,
+                                    source_assets,
+                                    source_media_items,
+                                ) = await _resolve_lyria3_reference_images(
+                                    request_dto=request_dto,
+                                    media_repo=media_repo,
+                                    source_asset_repo=source_asset_repo,
+                                )
+
                             lyria_client = GenAIModelSetup.get_omni_client()
+
                             lyria3_state: dict[str, Any] = {
                                 "prompt": _build_lyria3_prompt(request_dto),
                                 "blocked": False,
@@ -393,7 +508,10 @@ def _process_audio_in_background(
                                 return await asyncio.to_thread(
                                     lyria_client.interactions.create,
                                     model=request_dto.model.value,
-                                    input=[{"type": "text", "text": prompt}],
+                                    input=[
+                                        {"type": "text", "text": prompt},
+                                        *lyria3_image_inputs,
+                                    ],
                                     timeout=AudioService.LYRIA_3_TIMEOUT_SECONDS,
                                 )
 
@@ -572,6 +690,14 @@ def _process_audio_in_background(
                             update_data["mime_type"] = output_mime_type
                         if effective_prompt:
                             update_data["prompt"] = effective_prompt
+                        if source_assets:
+                            update_data["source_assets"] = [
+                                item.model_dump() for item in source_assets
+                            ]
+                        if source_media_items:
+                            update_data["source_media_items"] = [
+                                item.model_dump() for item in source_media_items
+                            ]
                         if (
                             getattr(
                                 request_dto, "metadata_generation_model", None

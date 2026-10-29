@@ -13,14 +13,18 @@
 # limitations under the License.
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from pydantic import ValidationError
 import pytest
 
 from src.common.base_dto import GenerationModelEnum
 from src.common.schema.media_item_model import (
+    AssetRoleEnum,
     MediaItemModel,
     MimeTypeEnum,
     JobStatusEnum,
+    SourceMediaItemLink,
 )
+from src.source_assets.schema.source_asset_model import AssetScopeEnum
 from src.users.user_model import UserModel
 from src.audios.dto.create_audio_dto import CreateAudioDto
 from src.audios.audio_service import (
@@ -703,3 +707,336 @@ class TestLyria3Helpers:
         audio, mime = _extract_lyria3_audio(interaction)
         assert audio is None
         assert mime == "audio/mpeg"
+
+
+class TestCreateAudioDtoReferenceImages:
+
+    def test_rejects_empty_or_whitespace_prompt(self):
+        with pytest.raises(ValidationError, match="prompt cannot be empty"):
+            CreateAudioDto(
+                workspace_id=1,
+                prompt="   ",
+                model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+                source_asset_ids=[1],
+            )
+
+    def test_accepts_reference_images_on_lyria3_models(self):
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Cinematic ambient track",
+            model=GenerationModelEnum.LYRIA_3_PRO_PREVIEW,
+            source_asset_ids=[1, 2],
+            source_media_items=[
+                SourceMediaItemLink(
+                    media_item_id=10, media_index=0, role=AssetRoleEnum.INPUT
+                )
+            ],
+        )
+        assert dto.source_asset_ids == [1, 2]
+        assert len(dto.source_media_items or []) == 1
+
+    @pytest.mark.parametrize(
+        "unsupported_model",
+        [
+            GenerationModelEnum.LYRIA_002,
+            GenerationModelEnum.CHIRP_3,
+            GenerationModelEnum.GEMINI_2_5_FLASH_TTS,
+        ],
+    )
+    def test_rejects_reference_images_on_non_lyria3_models(
+        self, unsupported_model
+    ):
+        with pytest.raises(
+            ValidationError,
+            match="Reference images are only supported for Lyria 3 models",
+        ):
+            CreateAudioDto(
+                workspace_id=1,
+                prompt="Test prompt",
+                model=unsupported_model,
+                source_asset_ids=[1],
+            )
+
+    def test_rejects_more_than_ten_combined_reference_images(self):
+        with pytest.raises(
+            ValidationError, match="At most 10 reference images"
+        ):
+            CreateAudioDto(
+                workspace_id=1,
+                prompt="Test prompt",
+                model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+                source_asset_ids=[1, 2, 3, 4, 5, 6],
+                source_media_items=[
+                    SourceMediaItemLink(
+                        media_item_id=i, media_index=0, role=AssetRoleEnum.INPUT
+                    )
+                    for i in range(10, 15)
+                ],
+            )
+
+
+class TestLyria3ReferenceImages:
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.SourceAssetRepository")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria3_passes_multimodal_images_and_persists_lineage(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_media_repo_cls,
+        mock_asset_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_media_repo = AsyncMock()
+        mock_media_repo.get_by_id.return_value = MagicMock(
+            id=50,
+            workspace_id=1,
+            mime_type=MimeTypeEnum.IMAGE_PNG,
+            gcs_uris=["gs://bucket/gen_0.png", "gs://bucket/gen_1.png"],
+        )
+        mock_media_repo_cls.return_value = mock_media_repo
+
+        ws_asset = MagicMock(
+            id=11,
+            workspace_id=1,
+            scope=AssetScopeEnum.PRIVATE,
+            mime_type=MimeTypeEnum.IMAGE_JPEG,
+            gcs_uri="gs://bucket/upload_11.jpg",
+        )
+        system_asset = MagicMock(
+            id=12,
+            workspace_id=999,
+            scope=AssetScopeEnum.SYSTEM,
+            mime_type="image/webp",
+            gcs_uri="gs://bucket/system_12.webp",
+        )
+        mock_asset_repo = AsyncMock()
+        mock_asset_repo.get_by_id.side_effect = [ws_asset, system_asset]
+        mock_asset_repo_cls.return_value = mock_asset_repo
+
+        mock_gcs_singleton = MagicMock()
+        mock_gcs_singleton.store_to_gcs.return_value = "gs://foo/lyria3_ref.mp3"
+        mock_gcs.return_value = mock_gcs_singleton
+
+        interaction = MagicMock(
+            id="int-ref",
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mpeg", data="SGVsbG8="
+            ),
+        )
+        mock_client = MagicMock()
+        mock_client.interactions.create.return_value = interaction
+        mock_genai_setup.get_omni_client.return_value = mock_client
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Ethereal soundtrack matching these visuals",
+            model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+            sample_count=1,
+            source_asset_ids=[11, 12],
+            source_media_items=[
+                SourceMediaItemLink(
+                    media_item_id=50, media_index=1, role=AssetRoleEnum.INPUT
+                )
+            ],
+        )
+
+        _process_audio_in_background(
+            media_item_id=200,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        _, call_kwargs = mock_client.interactions.create.call_args
+        assert call_kwargs["input"] == [
+            {
+                "type": "text",
+                "text": "Ethereal soundtrack matching these visuals",
+            },
+            {
+                "type": "image",
+                "mime_type": "image/jpeg",
+                "uri": "gs://bucket/upload_11.jpg",
+            },
+            {
+                "type": "image",
+                "mime_type": "image/webp",
+                "uri": "gs://bucket/system_12.webp",
+            },
+            {
+                "type": "image",
+                "mime_type": "image/png",
+                "uri": "gs://bucket/gen_1.png",
+            },
+        ]
+
+        mock_media_repo.update.assert_called_with(
+            200,
+            {
+                "status": JobStatusEnum.COMPLETED,
+                "gcs_uris": ["gs://foo/lyria3_ref.mp3"],
+                "generation_time": pytest.approx(0, abs=10.0),
+                "mime_type": MimeTypeEnum.AUDIO_MPEG,
+                "source_assets": [
+                    {"asset_id": 11, "role": AssetRoleEnum.INPUT},
+                    {"asset_id": 12, "role": AssetRoleEnum.INPUT},
+                ],
+                "source_media_items": [
+                    {
+                        "media_item_id": 50,
+                        "media_index": 1,
+                        "role": AssetRoleEnum.INPUT,
+                    }
+                ],
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "asset_mock,media_mock,dto_kwargs,expected_error",
+        [
+            (
+                MagicMock(
+                    id=11,
+                    workspace_id=2,
+                    scope=AssetScopeEnum.PRIVATE,
+                    mime_type=MimeTypeEnum.IMAGE_PNG,
+                    gcs_uri="gs://bucket/other_ws.png",
+                ),
+                None,
+                {"source_asset_ids": [11]},
+                "Source asset 11 was not found in this workspace.",
+            ),
+            (
+                MagicMock(
+                    id=11,
+                    workspace_id=1,
+                    scope=AssetScopeEnum.PRIVATE,
+                    mime_type=MimeTypeEnum.VIDEO_MP4,
+                    gcs_uri="gs://bucket/clip.mp4",
+                ),
+                None,
+                {"source_asset_ids": [11]},
+                "Source asset 11 is not a valid image asset.",
+            ),
+            (
+                None,
+                MagicMock(
+                    id=50,
+                    workspace_id=2,
+                    mime_type=MimeTypeEnum.IMAGE_PNG,
+                    gcs_uris=["gs://bucket/img.png"],
+                ),
+                {
+                    "source_media_items": [
+                        SourceMediaItemLink(
+                            media_item_id=50,
+                            media_index=0,
+                            role=AssetRoleEnum.INPUT,
+                        )
+                    ]
+                },
+                "Media item 50 was not found in this workspace.",
+            ),
+            (
+                None,
+                MagicMock(
+                    id=50,
+                    workspace_id=1,
+                    mime_type=MimeTypeEnum.IMAGE_PNG,
+                    gcs_uris=["gs://bucket/img.png"],
+                ),
+                {
+                    "source_media_items": [
+                        SourceMediaItemLink(
+                            media_item_id=50,
+                            media_index=3,
+                            role=AssetRoleEnum.INPUT,
+                        )
+                    ]
+                },
+                "Media item 50 index 3 is out of bounds.",
+            ),
+            (
+                None,
+                MagicMock(
+                    id=50,
+                    workspace_id=1,
+                    mime_type=MimeTypeEnum.AUDIO_MPEG,
+                    gcs_uris=["gs://bucket/song.mp3"],
+                ),
+                {
+                    "source_media_items": [
+                        SourceMediaItemLink(
+                            media_item_id=50,
+                            media_index=0,
+                            role=AssetRoleEnum.INPUT,
+                        )
+                    ]
+                },
+                "Media item 50 is not an image item.",
+            ),
+        ],
+    )
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.SourceAssetRepository")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria3_rejects_invalid_reference_inputs(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_media_repo_cls,
+        mock_asset_repo_cls,
+        mock_worker_db,
+        asset_mock,
+        media_mock,
+        dto_kwargs,
+        expected_error,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_media_repo = AsyncMock()
+        mock_media_repo.get_by_id.return_value = media_mock
+        mock_media_repo_cls.return_value = mock_media_repo
+
+        mock_asset_repo = AsyncMock()
+        mock_asset_repo.get_by_id.return_value = asset_mock
+        mock_asset_repo_cls.return_value = mock_asset_repo
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Ambient track",
+            model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+            sample_count=1,
+            **dto_kwargs,
+        )
+
+        _process_audio_in_background(
+            media_item_id=201,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_genai_setup.get_omni_client.assert_not_called()
+        mock_gcs.return_value.store_to_gcs.assert_not_called()
+        mock_media_repo.update.assert_called_with(
+            201,
+            {
+                "status": JobStatusEnum.FAILED,
+                "error_message": expected_error,
+            },
+        )

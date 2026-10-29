@@ -40,9 +40,23 @@ import {
   MODEL_CONFIGS,
 } from '../common/config/model-config';
 import {GalleryService} from '../gallery/gallery.service';
+import {AssetTypeEnum} from '../admin/source-assets-management/source-asset.model';
+import {
+  ImageSelectorComponent,
+  MediaItemSelection,
+} from '../common/components/image-selector/image-selector.component';
+import {
+  ReferenceImage,
+  SourceMediaItemLink,
+} from '../common/models/search.model';
+import {
+  SourceAssetResponseDto,
+  SourceAssetService,
+} from '../common/services/source-asset.service';
 import {Observable} from 'rxjs';
 import {
   handleErrorSnackbar,
+  handleInfoSnackbar,
   handleSuccessSnackbar,
 } from '../utils/handleMessageSnackbar';
 
@@ -86,6 +100,7 @@ export class AudioComponent implements OnInit {
   negativePrompt = '';
   seed: number | undefined;
   sampleCount = 1;
+  referenceImages: ReferenceImage[] = [];
 
   // TTS & Chirp Specific Inputs
   selectedLanguage: LanguageEnum = LanguageEnum.EN_US;
@@ -193,6 +208,7 @@ export class AudioComponent implements OnInit {
     public matIconRegistry: MatIconRegistry,
     @Inject(GalleryService)
     private galleryService: GalleryService,
+    private sourceAssetService: SourceAssetService,
   ) {
     this.activeAudioJob$ = this.searchService.activeAudioJob$;
   }
@@ -236,6 +252,11 @@ export class AudioComponent implements OnInit {
     return this.selectedLyriaConfig?.capabilities?.supportsSeed ?? false;
   }
 
+  /** Max reference images supported by the active Lyria model (10 for Lyria 3, 0 for Lyria 2). */
+  get lyriaMaxReferenceImages(): number {
+    return this.selectedLyriaConfig?.capabilities?.maxReferenceImages ?? 0;
+  }
+
   /** Short, human-readable description of the selected Lyria model. */
   get lyriaModelHint(): string {
     switch (this.lyriaModel) {
@@ -255,7 +276,142 @@ export class AudioComponent implements OnInit {
     if (!this.lyriaSupportsSeed) {
       this.seed = undefined;
     }
+    if (this.referenceImages.length > this.lyriaMaxReferenceImages) {
+      this.referenceImages = this.referenceImages.slice(
+        0,
+        this.lyriaMaxReferenceImages,
+      );
+    }
     this.saveState();
+  }
+
+  openImageSelector() {
+    const maxRefs = this.lyriaMaxReferenceImages;
+    const remainingSlots = maxRefs - this.referenceImages.length;
+
+    if (remainingSlots <= 0) {
+      handleInfoSnackbar(
+        this.snackBar,
+        `You can only add up to ${maxRefs} reference images for this model.`,
+      );
+      return;
+    }
+
+    const dialogRef = this.dialog.open(ImageSelectorComponent, {
+      width: '90vw',
+      height: '80vh',
+      maxWidth: '90vw',
+      data: {
+        mimeType: 'image/*',
+        assetType: AssetTypeEnum.GENERIC_IMAGE,
+        multiSelect: true,
+        maxSelection: remainingSlots,
+      },
+      panelClass: 'image-selector-dialog',
+    });
+
+    dialogRef.afterClosed().subscribe((result: any) => {
+      if (!result) return;
+      const results = Array.isArray(result) ? result : [result];
+      results.forEach(res => this.processReferenceInput(res));
+    });
+  }
+
+  onReferenceImageDrop(event: DragEvent) {
+    event.preventDefault();
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    const maxRefs = this.lyriaMaxReferenceImages;
+    let availableSlots = maxRefs - this.referenceImages.length;
+    if (availableSlots <= 0) {
+      handleInfoSnackbar(
+        this.snackBar,
+        `You can only add up to ${maxRefs} reference images for this model.`,
+      );
+      return;
+    }
+
+    for (let i = 0; i < files.length && availableSlots > 0; i++) {
+      const file = files[i];
+      if (file.type.startsWith('image/')) {
+        availableSlots--;
+        this.sourceAssetService
+          .uploadAsset(file, {assetType: AssetTypeEnum.GENERIC_IMAGE})
+          .subscribe({
+            next: (asset: SourceAssetResponseDto) => {
+              if (asset && asset.id) {
+                this.processReferenceInput(asset);
+              }
+            },
+            error: err => {
+              handleErrorSnackbar(this.snackBar, err, 'Upload reference image');
+            },
+          });
+      }
+    }
+  }
+
+  clearReferenceImage(index: number, event: MouseEvent) {
+    event.stopPropagation();
+    if (index >= 0 && index < this.referenceImages.length) {
+      this.referenceImages.splice(index, 1);
+    }
+  }
+
+  private processReferenceInput(
+    result: MediaItemSelection | SourceAssetResponseDto,
+  ) {
+    if (this.referenceImages.length >= this.lyriaMaxReferenceImages) {
+      return;
+    }
+
+    const isGalleryImage = !('gcsUri' in result);
+    let previewUrl: string | null = null;
+    let sourceAssetId: number | undefined;
+    let sourceMediaItem: SourceMediaItemLink | undefined;
+
+    if (isGalleryImage) {
+      const selection = result as MediaItemSelection;
+      previewUrl =
+        selection.mediaItem.presignedUrls?.[selection.selectedIndex || 0] ||
+        null;
+      sourceMediaItem = {
+        mediaItemId: selection.mediaItem.id,
+        mediaIndex: selection.selectedIndex,
+        role: 'input',
+      };
+    } else {
+      const asset = result as SourceAssetResponseDto;
+      previewUrl = asset.presignedUrl || null;
+      sourceAssetId = asset.id;
+    }
+
+    if (!previewUrl) return;
+
+    const isDuplicate = this.referenceImages.some(img => {
+      if (sourceAssetId && img.sourceAssetId === sourceAssetId) return true;
+      if (
+        sourceMediaItem &&
+        img.sourceMediaItem &&
+        img.sourceMediaItem.mediaItemId === sourceMediaItem.mediaItemId &&
+        img.sourceMediaItem.mediaIndex === sourceMediaItem.mediaIndex
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    if (isDuplicate) {
+      handleInfoSnackbar(this.snackBar, 'This image is already selected.');
+      return;
+    }
+
+    this.referenceImages.push({
+      previewUrl,
+      sourceAssetId,
+      sourceMediaItem,
+    });
   }
 
   onVoiceSelectionChange(value: string) {
@@ -288,11 +444,20 @@ export class AudioComponent implements OnInit {
   }
 
   generate() {
+    if (!this.prompt.trim()) {
+      handleInfoSnackbar(
+        this.snackBar,
+        'Please enter a prompt to generate audio.',
+      );
+      return;
+    }
+
     this.isLoading = true;
     this.mediaItem = null; // Clear previous result
 
     const activeWorkspaceId = this.workspaceStateService.getActiveWorkspaceId();
     if (!activeWorkspaceId) {
+      this.isLoading = false;
       handleErrorSnackbar(
         this.snackBar,
         {message: 'Please select a workspace first.'},
@@ -313,6 +478,18 @@ export class AudioComponent implements OnInit {
       backendModel = GenerationModelEnum.GEMINI_2_5_FLASH_TTS;
     }
 
+    const sourceAssetIds: number[] = [];
+    const sourceMediaItems: SourceMediaItemLink[] = [];
+    if (this.selectedModel === 'lyria' && this.lyriaMaxReferenceImages > 0) {
+      this.referenceImages.forEach(img => {
+        if (img.sourceMediaItem) {
+          sourceMediaItems.push(img.sourceMediaItem);
+        } else if (img.sourceAssetId) {
+          sourceAssetIds.push(img.sourceAssetId);
+        }
+      });
+    }
+
     // 2. Construct the generic DTO
     const request: CreateAudioDto = {
       model: backendModel,
@@ -326,6 +503,8 @@ export class AudioComponent implements OnInit {
           ? this.seed
           : undefined,
       sampleCount: this.sampleCount,
+      sourceAssetIds: sourceAssetIds.length ? sourceAssetIds : undefined,
+      sourceMediaItems: sourceMediaItems.length ? sourceMediaItems : undefined,
       languageCode:
         this.selectedModel !== 'lyria'
           ? (this.selectedLanguage as LanguageEnum)

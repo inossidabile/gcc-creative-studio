@@ -19,6 +19,13 @@ from pydantic import Field, field_validator, model_validator
 
 from src.audios.audio_constants import LanguageEnum, VoiceEnum
 from src.common.base_dto import BaseDto, GenerationModelEnum
+from src.common.schema.media_item_model import SourceMediaItemLink
+
+LYRIA_3_IMAGE_INPUT_MODELS = {
+    GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+    GenerationModelEnum.LYRIA_3_PRO_PREVIEW,
+}
+MAX_LYRIA_3_REFERENCE_IMAGES = 10
 
 
 class CreateAudioDto(BaseDto):
@@ -72,6 +79,18 @@ class CreateAudioDto(BaseDto):
         description="[Lyria Only] A seed for deterministic generation.",
     )
 
+    source_asset_ids: Annotated[list[int], Field(max_length=10)] | None = Field(
+        default=None,
+        description="[Lyria 3 Only] IDs of uploaded image assets from the library (up to 10 total reference images).",
+    )
+
+    source_media_items: (
+        Annotated[list[SourceMediaItemLink], Field(max_length=10)] | None
+    ) = Field(
+        default=None,
+        description="[Lyria 3 Only] Generated gallery image references (up to 10 total reference images).",
+    )
+
     # --- TTS / Chirp Specific Fields ---
     language_code: LanguageEnum | None = Field(
         default=LanguageEnum.EN_US,
@@ -117,6 +136,23 @@ class CreateAudioDto(BaseDto):
         model_str = str(self.model).lower()
 
         is_music_model = "lyria" in model_str
+        if not (self.prompt or "").strip():
+            raise ValueError("prompt cannot be empty.")
+
+        total_reference_images = len(self.source_asset_ids or []) + len(
+            self.source_media_items or []
+        )
+        if total_reference_images > 0:
+            if self.model not in LYRIA_3_IMAGE_INPUT_MODELS:
+                raise ValueError(
+                    f"Reference images are only supported for Lyria 3 models "
+                    f"({[m.value for m in sorted(LYRIA_3_IMAGE_INPUT_MODELS, key=lambda m: m.value)]})."
+                )
+            if total_reference_images > MAX_LYRIA_3_REFERENCE_IMAGES:
+                raise ValueError(
+                    f"At most {MAX_LYRIA_3_REFERENCE_IMAGES} reference images "
+                    f"can be provided per request (got {total_reference_images})."
+                )
 
         if not is_music_model:
             # TTS Check

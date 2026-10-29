@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic import ValidationError
 import pytest
@@ -32,6 +33,7 @@ from src.audios.audio_service import (
     AudioService,
     _build_lyria3_prompt,
     _extract_lyria3_audio,
+    _extract_lyria3_text,
     _is_lyria3_content_blocked,
     _process_audio_in_background,
     _simplify_lyria3_prompt,
@@ -1038,5 +1040,187 @@ class TestLyria3ReferenceImages:
             {
                 "status": JobStatusEnum.FAILED,
                 "error_message": expected_error,
+            },
+        )
+
+
+class TestLyria3LyricsAndStructure:
+
+    def test_extract_text_returns_none_for_bare_mock_or_audio_only(self):
+        bare_mock = MagicMock(
+            id="inter_bare",
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mp3", data="SGVsbG8="
+            ),
+        )
+        assert _extract_lyria3_text(bare_mock) is None
+        assert (
+            _extract_lyria3_text(
+                {"outputs": [{"type": "audio", "data": "SGVsbG8="}]}
+            )
+            is None
+        )
+
+    def test_extract_text_from_output_text_with_bracket_tags(self):
+        lyrics = "[Verse 1]\nNeon lights on wet asphalt\n\n[Chorus]\nRun into the night"
+        interaction = MagicMock(steps=None, outputs=None, output_text=lyrics)
+        result = _extract_lyria3_text(interaction)
+        assert result == {"raw_text": lyrics, "lyrics": lyrics}
+        assert "structure" not in result
+
+    def test_extract_text_from_steps_ignores_user_input_and_parses_structure(
+        self,
+    ):
+        structure_obj = {
+            "tempo": "122 BPM",
+            "key": "A minor",
+            "sections": [
+                {"name": "Intro", "duration": "0:00-0:08"},
+                {"name": "Chorus", "duration": "0:08-0:30"},
+            ],
+        }
+        user_step = MagicMock(
+            type="user_input",
+            content=[MagicMock(type="text", text="User prompt text")],
+        )
+        model_step = MagicMock(
+            type="model_output",
+            content=[
+                MagicMock(type="text", text=json.dumps(structure_obj)),
+                MagicMock(
+                    type="text",
+                    text="[Chorus]\nElectric dreams tonight",
+                ),
+                MagicMock(type="audio", data=b"\x00\x01"),
+            ],
+        )
+        interaction = MagicMock(
+            steps=[user_step, model_step],
+            outputs=None,
+            output_text="ignored fallback",
+        )
+        result = _extract_lyria3_text(interaction)
+        assert result is not None
+        assert result["structure"] == structure_obj
+        assert result["lyrics"] == "[Chorus]\nElectric dreams tonight"
+        assert "User prompt text" not in result["raw_text"]
+
+    def test_extract_text_from_rest_outputs_extracts_section_lyrics(self):
+        payload = {
+            "bpm": 110,
+            "sections": [
+                {"name": "Verse 1", "lyrics": "Walking by the sea"},
+                {"name": "Chorus", "lyrics": "Golden horizon"},
+            ],
+        }
+        interaction = {
+            "outputs": [
+                {"type": "text", "text": json.dumps(payload)},
+                {"type": "audio", "mime_type": "audio/mpeg", "data": "SGk="},
+            ]
+        }
+        result = _extract_lyria3_text(interaction)
+        assert result is not None
+        assert result["structure"] == payload
+        assert (
+            result["lyrics"]
+            == "[Verse 1]\nWalking by the sea\n\n[Chorus]\nGolden horizon"
+        )
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria3_persists_aligned_multi_sample_audio_analysis(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_repo = AsyncMock()
+        mock_repo_cls.return_value = mock_repo
+
+        mock_gcs_singleton = MagicMock()
+        mock_gcs_singleton.store_to_gcs.side_effect = [
+            "gs://bucket/track_0.mp3",
+            "gs://bucket/track_2.mp3",
+        ]
+        mock_gcs.return_value = mock_gcs_singleton
+
+        inter_0 = MagicMock(
+            id="i0",
+            steps=None,
+            outputs=None,
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mp3", data="SGVsbG8="
+            ),
+            output_text="[Verse]\nTrack zero lyrics",
+        )
+        # Sample 1 fails to return audio -> omitted from both gcs_uris and tracks.
+        inter_1 = MagicMock(
+            id="i1",
+            steps=None,
+            outputs=None,
+            output_audio=None,
+            output_text="Orphaned text",
+        )
+        # Sample 2 succeeds with audio only (no text) -> tracks[1] is None.
+        inter_2 = MagicMock(
+            id="i2",
+            steps=None,
+            outputs=None,
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mp3", data="V29ybGQ="
+            ),
+            output_text=None,
+        )
+
+        mock_client = MagicMock()
+        mock_client.interactions.create.side_effect = [
+            inter_0,
+            inter_1,
+            inter_2,
+        ]
+        mock_genai_setup.get_omni_client.return_value = mock_client
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Indie pop anthem",
+            model=GenerationModelEnum.LYRIA_3_PRO_PREVIEW,
+            sample_count=3,
+        )
+
+        _process_audio_in_background(
+            media_item_id=305,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_repo.update.assert_called_with(
+            305,
+            {
+                "status": JobStatusEnum.COMPLETED,
+                "gcs_uris": [
+                    "gs://bucket/track_0.mp3",
+                    "gs://bucket/track_2.mp3",
+                ],
+                "generation_time": pytest.approx(0, abs=10.0),
+                "mime_type": MimeTypeEnum.AUDIO_MPEG,
+                "audio_analysis": {
+                    "tracks": [
+                        {
+                            "raw_text": "[Verse]\nTrack zero lyrics",
+                            "lyrics": "[Verse]\nTrack zero lyrics",
+                        },
+                        None,
+                    ]
+                },
             },
         )

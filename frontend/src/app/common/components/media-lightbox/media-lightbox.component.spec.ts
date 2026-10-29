@@ -18,8 +18,10 @@ import {ComponentFixture, TestBed} from '@angular/core/testing';
 import {provideRouter} from '@angular/router';
 import {provideHttpClient} from '@angular/common/http';
 import {provideHttpClientTesting} from '@angular/common/http/testing';
+import {Clipboard} from '@angular/cdk/clipboard';
 import {MatDialogModule} from '@angular/material/dialog';
 import {MatSnackBarModule} from '@angular/material/snack-bar';
+import {MatTooltipModule} from '@angular/material/tooltip';
 import {NoopAnimationsModule} from '@angular/platform-browser/animations';
 import {CUSTOM_ELEMENTS_SCHEMA} from '@angular/core';
 
@@ -36,7 +38,12 @@ describe('MediaLightboxComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       declarations: [MediaLightboxComponent],
-      imports: [MatDialogModule, MatSnackBarModule, NoopAnimationsModule],
+      imports: [
+        MatDialogModule,
+        MatSnackBarModule,
+        MatTooltipModule,
+        NoopAnimationsModule,
+      ],
       providers: [
         provideRouter([]),
         provideHttpClient(),
@@ -112,6 +119,66 @@ describe('MediaLightboxComponent', () => {
       component['executeMove'](1, 2, 'Same');
       expect(moveSpy).not.toHaveBeenCalled();
       expect(emitted).toEqual([]);
+    });
+  });
+
+  describe('audio lyrics & song structure', () => {
+    beforeEach(() => {
+      component.mediaItem = {
+        id: 44,
+        workspaceId: 1,
+        mimeType: 'audio/mpeg',
+        prompt: 'Synthwave anthem',
+        presignedUrls: [
+          'https://example.com/a.mp3',
+          'https://example.com/b.mp3',
+        ],
+        audioAnalysis: {
+          tracks: [
+            {
+              raw_text: '[Verse 1]\nNeon skyline',
+              lyrics: '[Verse 1]\nNeon skyline',
+              structure: {
+                tempo: '124 BPM',
+                sections: [{name: 'Verse 1', duration: '0:00-0:15'}],
+              },
+            },
+            null,
+          ],
+        },
+      } as any;
+      component.selectedIndex = 0;
+      fixture.detectChanges();
+    });
+
+    it('displays lyrics and structure for the selected track and updates on track switch', () => {
+      expect(component.hasCurrentTrackText).toBeTrue();
+      expect(component.currentTrackLyrics).toBe('[Verse 1]\nNeon skyline');
+      expect(component.currentTrackStructureEntries).toEqual([
+        {label: 'Tempo', value: '124 BPM'},
+        {label: 'Verse 1', value: '0:00-0:15'},
+      ]);
+
+      const host = fixture.nativeElement as HTMLElement;
+      expect(host.querySelector('.audio-lyrics-panel')?.textContent).toContain(
+        'Neon skyline',
+      );
+
+      component.selectedIndex = 1;
+      fixture.detectChanges();
+      expect(component.hasCurrentTrackText).toBeFalse();
+      expect(host.querySelector('.audio-lyrics-panel')).toBeNull();
+    });
+
+    it('copies formatted structure and lyrics to the clipboard', () => {
+      const clipboard = TestBed.inject(Clipboard);
+      const copySpy = spyOn(clipboard, 'copy');
+
+      component.copyCurrentTrackText();
+
+      expect(copySpy).toHaveBeenCalledWith(
+        'Tempo: 124 BPM\nVerse 1: 0:00-0:15\n\n[Verse 1]\nNeon skyline',
+      );
     });
   });
 });

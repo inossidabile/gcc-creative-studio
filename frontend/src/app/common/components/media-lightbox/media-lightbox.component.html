@@ -26,7 +26,7 @@
     (click)="(!isVideo && !isAudio) && openPhotoSwipe(selectedIndex)"
   >
     <!-- Audio Stage Visuals -->
-    <div *ngIf="isAudio" class="audio-stage-layout">
+    <div *ngIf="isAudio" class="audio-stage-layout" [class.has-lyrics]="hasCurrentTrackText">
         <div class="audio-icon-container">
             <mat-icon class="stage-icon">music_note</mat-icon>
         </div>
@@ -39,6 +39,40 @@
               matTooltipShowDelay="300"
             >{{ mediaItem.prompt || 'Untitled Audio' }}</h2>
             <p class="audio-type">{{ mediaItem.mimeType }}</p>
+        </div>
+
+        <div *ngIf="hasCurrentTrackText" class="audio-lyrics-panel glass-effect">
+          <div class="audio-lyrics-header">
+            <span class="audio-lyrics-title">
+              <mat-icon class="lyrics-icon">lyrics</mat-icon>
+              {{
+                currentTrackLyrics && currentTrackStructureEntries.length
+                  ? 'Lyrics & Structure'
+                  : currentTrackLyrics
+                    ? 'Lyrics'
+                    : 'Song Structure'
+              }}
+            </span>
+            <button
+              mat-icon-button
+              type="button"
+              class="copy-lyrics-btn"
+              matTooltip="Copy lyrics / structure"
+              (click)="copyCurrentTrackText(); $event.stopPropagation()"
+              aria-label="Copy lyrics"
+            >
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </div>
+          <div class="audio-lyrics-body">
+            <div *ngIf="currentTrackStructureEntries.length" class="structure-grid">
+              <div *ngFor="let entry of currentTrackStructureEntries" class="structure-chip">
+                <span class="structure-label">{{ entry.label }}</span>
+                <span class="structure-value">{{ entry.value }}</span>
+              </div>
+            </div>
+            <pre *ngIf="currentTrackLyrics" class="lyrics-text">{{ currentTrackLyrics }}</pre>
+          </div>
         </div>
     </div>
     <ng-container *ngIf="!isVideo && !isAudio && selectedUrl">

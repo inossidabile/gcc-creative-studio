@@ -100,13 +100,183 @@ export interface MediaItem {
   groundingMetadata?: any;
 
   // Music specific
-  audioAnalysis?: Record<string, any>;
+  audioAnalysis?: AudioAnalysis;
   voiceName?: VoiceEnum | string;
   languageCode?: LanguageEnum;
 
   // Debugging field
   rawData?: Record<string, any>;
   errorMessage?: string;
+}
+
+export interface AudioTrackAnalysis {
+  raw_text?: string;
+  rawText?: string;
+  lyrics?: string;
+  structure?: Record<string, any> | any[];
+  [key: string]: any;
+}
+
+export interface AudioAnalysis {
+  tracks?: Array<AudioTrackAnalysis | null>;
+  [key: string]: any;
+}
+
+export interface SongStructureEntry {
+  label: string;
+  value: string;
+}
+
+function humanizeStructureKey(key: string): string {
+  return key
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function summarizeStructureSection(section: Record<string, any>): string {
+  const parts: string[] = [];
+  if (section['duration']) parts.push(String(section['duration']));
+  if (section['bars'] !== undefined && section['bars'] !== null) {
+    parts.push(`${section['bars']} bars`);
+  }
+  if (section['time']) parts.push(String(section['time']));
+  const descriptor =
+    section['description'] ||
+    section['mood'] ||
+    section['style'] ||
+    section['notes'];
+  if (descriptor) parts.push(String(descriptor));
+
+  if (parts.length > 0) {
+    return parts.join(' • ');
+  }
+
+  const extra = Object.entries(section)
+    .filter(
+      ([k, v]) =>
+        !['name', 'section', 'type', 'lyrics'].includes(k) &&
+        v !== undefined &&
+        v !== null &&
+        v !== '',
+    )
+    .map(([k, v]) => `${humanizeStructureKey(k)}: ${String(v)}`);
+  return extra.join(' • ') || 'Section';
+}
+
+export function getAudioTrackAnalysis(
+  item: {audioAnalysis?: AudioAnalysis | null} | null | undefined,
+  index = 0,
+): AudioTrackAnalysis | null {
+  const analysis = item?.audioAnalysis ?? (item as any)?.audio_analysis;
+  if (!analysis || typeof analysis !== 'object') {
+    return null;
+  }
+  if (Array.isArray(analysis.tracks)) {
+    return analysis.tracks[index] ?? null;
+  }
+  return null;
+}
+
+export function getAudioTrackLyrics(
+  track: AudioTrackAnalysis | null | undefined,
+): string | null {
+  if (!track) return null;
+  if (typeof track.lyrics === 'string' && track.lyrics.trim()) {
+    return track.lyrics.trim();
+  }
+  if (!track.structure) {
+    const raw = track.raw_text ?? track.rawText;
+    if (typeof raw === 'string' && raw.trim()) {
+      return raw.trim();
+    }
+  }
+  return null;
+}
+
+export function formatSongStructureEntries(
+  track: AudioTrackAnalysis | null | undefined,
+): SongStructureEntry[] {
+  const structure = track?.structure;
+  if (!structure) return [];
+
+  if (Array.isArray(structure)) {
+    return structure.map((sec, idx) => {
+      if (typeof sec === 'string') {
+        return {label: `Section ${idx + 1}`, value: sec};
+      }
+      if (sec && typeof sec === 'object') {
+        const label = String(
+          sec['name'] || sec['section'] || sec['type'] || `Section ${idx + 1}`,
+        );
+        return {label, value: summarizeStructureSection(sec)};
+      }
+      return {label: `Section ${idx + 1}`, value: String(sec)};
+    });
+  }
+
+  if (typeof structure === 'object') {
+    const entries: SongStructureEntry[] = [];
+    for (const [key, val] of Object.entries(structure)) {
+      if (
+        key === 'lyrics' ||
+        key === 'sections' ||
+        val === undefined ||
+        val === null ||
+        val === ''
+      ) {
+        continue;
+      }
+      if (
+        typeof val === 'string' ||
+        typeof val === 'number' ||
+        typeof val === 'boolean'
+      ) {
+        entries.push({label: humanizeStructureKey(key), value: String(val)});
+      } else if (Array.isArray(val)) {
+        entries.push({
+          label: humanizeStructureKey(key),
+          value: val
+            .map(v => (typeof v === 'object' ? JSON.stringify(v) : String(v)))
+            .join(', '),
+        });
+      }
+    }
+
+    if (Array.isArray(structure['sections'])) {
+      structure['sections'].forEach((sec: any, idx: number) => {
+        if (typeof sec === 'string') {
+          entries.push({label: `Section ${idx + 1}`, value: sec});
+        } else if (sec && typeof sec === 'object') {
+          const label = String(
+            sec['name'] ||
+              sec['section'] ||
+              sec['type'] ||
+              `Section ${idx + 1}`,
+          );
+          entries.push({label, value: summarizeStructureSection(sec)});
+        }
+      });
+    }
+
+    return entries;
+  }
+
+  return [];
+}
+
+export function formatTrackAnalysisForCopy(
+  track: AudioTrackAnalysis | null | undefined,
+): string {
+  const parts: string[] = [];
+  const entries = formatSongStructureEntries(track);
+  if (entries.length > 0) {
+    parts.push(entries.map(e => `${e.label}: ${e.value}`).join('\n'));
+  }
+  const lyrics = getAudioTrackLyrics(track);
+  if (lyrics) {
+    parts.push(lyrics);
+  }
+  return parts.join('\n\n');
 }
 
 /**

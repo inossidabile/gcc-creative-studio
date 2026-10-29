@@ -377,4 +377,66 @@ describe('MediaDetailComponent', () => {
       ]);
     });
   });
+
+  describe('audio lyrics & song structure in Details tab', () => {
+    it('renders lyrics and song structure for the active track index', () => {
+      mockGalleryService.getMedia.and.returnValue(
+        of({
+          id: 500,
+          workspaceId: 1,
+          createdAt: '2026-07-08T22:20:10Z',
+          itemType: 'media_item',
+          status: 'COMPLETED',
+          mimeType: 'audio/mpeg',
+          prompt: 'Dream pop ballad',
+          gcsUris: ['gs://b/0.mp3', 'gs://b/1.mp3'],
+          presignedUrls: [
+            'https://example.com/0.mp3',
+            'https://example.com/1.mp3',
+          ],
+          presignedThumbnailUrls: [],
+          audioAnalysis: {
+            tracks: [
+              {
+                raw_text: '[Chorus]\nStarlight fading',
+                lyrics: '[Chorus]\nStarlight fading',
+                structure: {
+                  key: 'F major',
+                  sections: [{name: 'Chorus', bars: 8}],
+                },
+              },
+              {
+                raw_text: '[Verse]\nSecond take',
+                lyrics: '[Verse]\nSecond take',
+              },
+            ],
+          },
+          metadata: {},
+        } as GalleryItem),
+      );
+
+      component.fetchMediaDetails(500, false);
+      fixture.detectChanges();
+
+      const host = fixture.nativeElement as HTMLElement;
+      const section = host.querySelector(
+        '[data-testid="track-lyrics-section"]',
+      );
+      expect(section).not.toBeNull();
+      expect(section?.textContent).toContain('Lyrics & Song Structure');
+      expect(section?.textContent).toContain('Key:');
+      expect(section?.textContent).toContain('F major');
+      expect(section?.textContent).toContain('8 bars');
+      expect(section?.textContent).toContain('Starlight fading');
+
+      component.currentImageIndex = 1;
+      fixture.detectChanges();
+
+      const updatedSection = host.querySelector(
+        '[data-testid="track-lyrics-section"]',
+      );
+      expect(updatedSection?.textContent).toContain('Second take');
+      expect(updatedSection?.textContent).not.toContain('Starlight fading');
+    });
+  });
 });

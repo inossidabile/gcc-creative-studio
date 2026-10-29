@@ -16,13 +16,14 @@
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
 import re
 import sys
 import time
 import wave
-from collections.abc import MutableSequence
+from collections.abc import MutableSequence, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -270,6 +271,96 @@ def _extract_lyria3_audio(interaction: Any) -> tuple[bytes | None, str]:
     return None, default_mime
 
 
+def _extract_lyria3_text(interaction: Any) -> dict[str, Any] | None:
+    """Extracts lyrics and/or song structure text from a Lyria 3 ``Interaction``.
+
+    Lyria 3 returns interleaved text blocks alongside audio (plain/tagged lyrics
+    or a JSON description of song structure) via ``steps[].content[]``, raw
+    ``outputs[]``, or the SDK's ``output_text`` convenience property. Returns
+    ``None`` when no non-empty text blocks are present.
+    """
+    blocks: list[str] = []
+
+    steps = _get_attr_or_key(interaction, "steps")
+    if isinstance(steps, Sequence) and not isinstance(steps, (str, bytes)):
+        for step in steps:
+            step_type = _get_attr_or_key(step, "type")
+            if isinstance(step_type, str) and step_type != "model_output":
+                continue
+            content = _get_attr_or_key(step, "content")
+            if isinstance(content, Sequence) and not isinstance(
+                content, (str, bytes)
+            ):
+                for item in content:
+                    if _get_attr_or_key(item, "type") != "text":
+                        continue
+                    text_val = _get_attr_or_key(item, "text")
+                    if isinstance(text_val, str) and text_val.strip():
+                        blocks.append(text_val.strip())
+
+    if not blocks:
+        outputs = _get_attr_or_key(interaction, "outputs")
+        if isinstance(outputs, Sequence) and not isinstance(
+            outputs, (str, bytes)
+        ):
+            for item in outputs:
+                if _get_attr_or_key(item, "type") != "text":
+                    continue
+                text_val = _get_attr_or_key(item, "text")
+                if isinstance(text_val, str) and text_val.strip():
+                    blocks.append(text_val.strip())
+
+    if not blocks:
+        output_text = _get_attr_or_key(interaction, "output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            blocks.append(output_text.strip())
+
+    if not blocks:
+        return None
+
+    entry: dict[str, Any] = {"raw_text": "\n\n".join(blocks)}
+    lyrics_parts: list[str] = []
+
+    for block in blocks:
+        parsed_json: Any = None
+        if block.startswith(("{", "[")):
+            try:
+                parsed_json = json.loads(block)
+            except ValueError:
+                parsed_json = None
+
+        if isinstance(parsed_json, dict):
+            entry["structure"] = parsed_json
+            inline_lyrics = parsed_json.get("lyrics")
+            if isinstance(inline_lyrics, str) and inline_lyrics.strip():
+                lyrics_parts.append(inline_lyrics.strip())
+            elif isinstance(parsed_json.get("sections"), list):
+                section_lyrics: list[str] = []
+                for sec in parsed_json["sections"]:
+                    if not isinstance(sec, dict):
+                        continue
+                    sec_text = sec.get("lyrics")
+                    if isinstance(sec_text, str) and sec_text.strip():
+                        sec_label = sec.get("name") or sec.get("section")
+                        if isinstance(sec_label, str) and sec_label.strip():
+                            section_lyrics.append(
+                                f"[{sec_label.strip()}]\n{sec_text.strip()}"
+                            )
+                        else:
+                            section_lyrics.append(sec_text.strip())
+                if section_lyrics:
+                    lyrics_parts.append("\n\n".join(section_lyrics))
+        elif isinstance(parsed_json, list):
+            entry["structure"] = parsed_json
+        else:
+            lyrics_parts.append(block)
+
+    if lyrics_parts:
+        entry["lyrics"] = "\n\n".join(lyrics_parts)
+
+    return entry
+
+
 def _process_audio_in_background(
     media_item_id: int,
     request_dto: CreateAudioDto,
@@ -328,6 +419,7 @@ def _process_audio_in_background(
                         effective_prompt: str | None = None
                         source_assets: list[SourceAssetLink] = []
                         source_media_items: list[SourceMediaItemLink] = []
+                        audio_analysis: dict[str, Any] | None = None
 
                         if request_dto.model in AudioService.GEMINI_MODELS:
                             client = GenAIModelSetup.init()
@@ -515,7 +607,9 @@ def _process_audio_in_background(
                                     timeout=AudioService.LYRIA_3_TIMEOUT_SECONDS,
                                 )
 
-                            async def generate_lyria3(index: int) -> str | None:
+                            async def generate_lyria3(
+                                index: int,
+                            ) -> tuple[str, dict[str, Any] | None] | None:
                                 prompt = lyria3_state["prompt"]
                                 try:
                                     try:
@@ -561,12 +655,18 @@ def _process_audio_in_background(
                                         else "mp3"
                                     )
                                     file_name = f"lyria3_music_{media_item_id}_{uid_short}_{index}.{extension}"
-                                    return gcs_service.store_to_gcs(
+                                    gcs_uri = gcs_service.store_to_gcs(
                                         folder="lyria_audio",
                                         file_name=file_name,
                                         mime_type=mime_type,
                                         contents=audio_bytes,
                                         decode=False,
+                                    )
+                                    if not gcs_uri:
+                                        return None
+                                    return (
+                                        gcs_uri,
+                                        _extract_lyria3_text(interaction),
                                     )
                                 except Exception as e:
                                     if _is_lyria3_content_blocked(e):
@@ -581,7 +681,20 @@ def _process_audio_in_background(
                                 for i in range(request_dto.sample_count)
                             ]
                             results = await asyncio.gather(*tasks)
-                            permanent_gcs_uris = [u for u in results if u]
+                            valid_results = [
+                                r for r in results if r is not None
+                            ]
+                            permanent_gcs_uris = [
+                                uri for uri, _ in valid_results
+                            ]
+                            track_analyses = [
+                                analysis for _, analysis in valid_results
+                            ]
+                            if any(
+                                analysis is not None
+                                for analysis in track_analyses
+                            ):
+                                audio_analysis = {"tracks": track_analyses}
                             output_mime_type = MimeTypeEnum.AUDIO_MPEG
                             if (
                                 not permanent_gcs_uris
@@ -698,6 +811,8 @@ def _process_audio_in_background(
                             update_data["source_media_items"] = [
                                 item.model_dump() for item in source_media_items
                             ]
+                        if audio_analysis:
+                            update_data["audio_analysis"] = audio_analysis
                         if (
                             getattr(
                                 request_dto, "metadata_generation_model", None

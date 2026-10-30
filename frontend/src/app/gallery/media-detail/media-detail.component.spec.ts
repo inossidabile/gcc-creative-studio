@@ -377,4 +377,194 @@ describe('MediaDetailComponent', () => {
       ]);
     });
   });
+
+  describe('audio lyrics & song structure in Details tab', () => {
+    it('renders lyrics and song structure for the active track index', () => {
+      mockGalleryService.getMedia.and.returnValue(
+        of({
+          id: 500,
+          workspaceId: 1,
+          createdAt: '2026-07-08T22:20:10Z',
+          itemType: 'media_item',
+          status: 'COMPLETED',
+          mimeType: 'audio/mpeg',
+          prompt: 'Dream pop ballad',
+          gcsUris: ['gs://b/0.mp3', 'gs://b/1.mp3'],
+          presignedUrls: [
+            'https://example.com/0.mp3',
+            'https://example.com/1.mp3',
+          ],
+          presignedThumbnailUrls: [],
+          audioAnalysis: {
+            tracks: [
+              {
+                raw_text: '[Chorus]\nStarlight fading',
+                lyrics: '[Chorus]\nStarlight fading',
+                structure: {
+                  key: 'F major',
+                  sections: [{name: 'Chorus', bars: 8}],
+                },
+              },
+              {
+                raw_text: '[Verse]\nSecond take',
+                lyrics: '[Verse]\nSecond take',
+              },
+            ],
+          },
+          metadata: {},
+        } as GalleryItem),
+      );
+
+      component.fetchMediaDetails(500, false);
+      fixture.detectChanges();
+
+      const host = fixture.nativeElement as HTMLElement;
+      const section = host.querySelector(
+        '[data-testid="track-lyrics-section"]',
+      );
+      expect(section).not.toBeNull();
+      expect(section?.textContent).toContain('Lyrics & Song Structure');
+      expect(section?.textContent).toContain('Key:');
+      expect(section?.textContent).toContain('F major');
+      expect(section?.textContent).toContain('8 bars');
+      expect(section?.textContent).toContain('Starlight fading');
+
+      component.currentImageIndex = 1;
+      fixture.detectChanges();
+
+      const updatedSection = host.querySelector(
+        '[data-testid="track-lyrics-section"]',
+      );
+      expect(updatedSection?.textContent).toContain('Second take');
+      expect(updatedSection?.textContent).not.toContain('Starlight fading');
+    });
+
+    it('renders seed parameter when seed is 0', () => {
+      mockGalleryService.getMedia.and.returnValue(
+        of({
+          id: 501,
+          workspaceId: 1,
+          createdAt: '2026-07-08T22:20:10Z',
+          itemType: 'media_item',
+          status: 'COMPLETED',
+          mimeType: 'audio/wav',
+          prompt: 'Deterministic instrumental',
+          seed: 0,
+          gcsUris: ['gs://b/0.wav'],
+          presignedUrls: ['https://example.com/0.wav'],
+          presignedThumbnailUrls: [],
+          metadata: {},
+        } as GalleryItem),
+      );
+
+      component.fetchMediaDetails(501, false);
+      fixture.detectChanges();
+
+      const host = fixture.nativeElement as HTMLElement;
+      expect(host.textContent).toContain('Seed:');
+      expect(host.textContent).toContain('0');
+    });
+
+    it('omits parentMediaItemId and uses Audio Reference fallback when sending audio to Omni', () => {
+      mockGalleryService.getMedia.and.returnValue(
+        of({
+          id: 502,
+          workspaceId: 1,
+          createdAt: '2026-07-08T22:20:10Z',
+          itemType: 'media_item',
+          status: 'COMPLETED',
+          mimeType: 'audio/mpeg',
+          originalPrompt: 'image!',
+          prompt: 'image!',
+          gcsUris: ['gs://b/0.mp3'],
+          presignedUrls: ['https://example.com/0.mp3'],
+          presignedThumbnailUrls: [],
+          metadata: {},
+        } as GalleryItem),
+      );
+
+      component.fetchMediaDetails(502, false);
+      component.handleEditWithOmni({
+        mediaItem: component.mediaItem,
+        selectedIndex: 0,
+      });
+
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/video'], {
+        state: {
+          remixState: {
+            generationModel: 'gemini-omni',
+            isOmniMode: true,
+            referenceAudio: {
+              id: 502,
+              type: 'media_item',
+              index: 0,
+              name: 'Audio Reference',
+            },
+          },
+        },
+      });
+    });
+
+    it('sets parentMediaItemId only for video media_item and omits it for uploaded video source_asset', () => {
+      mockGalleryService.getMedia.and.returnValue(
+        of({
+          id: 601,
+          workspaceId: 1,
+          createdAt: '2026-07-08T22:20:10Z',
+          itemType: 'media_item',
+          status: 'COMPLETED',
+          mimeType: 'video/mp4',
+          originalPrompt: 'Ocean waves',
+          gcsUris: ['gs://b/601.mp4'],
+          presignedUrls: ['https://example.com/601.mp4'],
+          presignedThumbnailUrls: ['https://example.com/601.jpg'],
+          metadata: {},
+        } as GalleryItem),
+      );
+
+      component.fetchMediaDetails(601, false);
+      component.handleEditWithOmni({
+        mediaItem: component.mediaItem,
+        selectedIndex: 0,
+      });
+
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/video'], {
+        state: {
+          remixState: jasmine.objectContaining({
+            parentMediaItemId: 601,
+            parentMediaIndex: 0,
+            isOmniMode: true,
+          }),
+        },
+      });
+
+      mockRouter.navigate.calls.reset();
+      component.mediaItem = {
+        id: 602,
+        workspaceId: 1,
+        createdAt: '2026-07-08T22:20:10Z',
+        itemType: 'source_asset',
+        status: 'COMPLETED',
+        mimeType: 'video/mp4',
+        gcsUris: ['gs://b/602.mp4'],
+        presignedUrls: ['https://example.com/602.mp4'],
+        presignedThumbnailUrls: [],
+        metadata: {},
+      } as GalleryItem;
+
+      component.handleEditWithOmni({
+        mediaItem: component.mediaItem,
+        selectedIndex: 0,
+      });
+
+      const navArgs = mockRouter.navigate.calls.mostRecent().args[1] as any;
+      expect(navArgs.state.remixState.parentMediaItemId).toBeUndefined();
+      expect(navArgs.state.remixState.referenceVideo).toEqual(
+        jasmine.objectContaining({
+          id: 602,
+          type: 'source_asset',
+        }),
+      );
+    });
+  });
 });

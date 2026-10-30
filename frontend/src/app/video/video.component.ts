@@ -734,7 +734,12 @@ export class VideoComponent implements OnInit, AfterViewInit {
               index: this.referenceAudio.index,
             }
           : undefined,
-      parentMediaItemId: this.parentMediaItemId ?? undefined,
+      parentMediaItemId:
+        this.currentMode === 'Ingredients to Video' &&
+        this.referenceVideo?.type === 'media_item' &&
+        this.referenceVideo.id === this.parentMediaItemId
+          ? this.parentMediaItemId
+          : undefined,
     };
 
     // TODO: Add notification when video is completed after the pooling
@@ -1202,6 +1207,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
   }
 
   private resetInputs() {
+    this.parentMediaItemId = null;
     this.sourceMediaItems = [null, null];
     this.image1Preview = null;
     this.image2Preview = null;
@@ -1489,6 +1495,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
     dialogRef.afterClosed().subscribe((result: any) => {
       if (!result) return;
 
+      this.parentMediaItemId = null;
       const res = Array.isArray(result) ? result[0] : result;
       if ('gcsUri' in res) {
         this.referenceVideo = {
@@ -1518,6 +1525,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
 
   clearReferenceVideo(event: Event): void {
     event.stopPropagation();
+    this.parentMediaItemId = null;
     this.referenceVideo = null;
     this.saveState();
   }

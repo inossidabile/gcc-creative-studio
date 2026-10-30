@@ -25,7 +25,16 @@ import {
   SimpleChanges,
   ViewChild,
 } from '@angular/core';
-import {MediaItem} from '../../models/media-item.model';
+import {
+  AudioTrackAnalysis,
+  MediaItem,
+  SongStructureEntry,
+  formatSongStructureEntries,
+  formatTrackAnalysisForCopy,
+  getAudioTrackAnalysis,
+  getAudioTrackCaption,
+  getAudioTrackLyrics,
+} from '../../models/media-item.model';
 import {GalleryItem} from '../../models/gallery-item.model';
 import PhotoSwipeLightbox from 'photoswipe/lightbox';
 import {Clipboard} from '@angular/cdk/clipboard';
@@ -59,13 +68,10 @@ export class MediaLightboxComponent
   @Input() showDownloadButton = true;
   @Input() showDeleteButton = false;
   @Input() showMoveButton = false;
+  @Input() showOmni = true;
 
   get isImage(): boolean {
     return this.mediaItem?.mimeType?.startsWith('image/') ?? false;
-  }
-
-  get showOmni(): boolean {
-    return true;
   }
 
   get showEditButton(): boolean {
@@ -488,8 +494,10 @@ export class MediaLightboxComponent
   }
 
   get aspectRatioClass(): string {
-    // For Audio, we just want a nice container, aspect-video works well for the player shape
-    if (this.isAudio) return 'aspect-video h-auto';
+    // Let the audio stage grow naturally when lyrics/structure are displayed
+    if (this.isAudio) {
+      return this.hasCurrentTrackText ? 'h-auto py-4' : 'aspect-video h-auto';
+    }
 
     // For Videos, we can still use the aspect ratio if available
     if (this.isVideo) {
@@ -505,6 +513,38 @@ export class MediaLightboxComponent
     // For Images, we don't want to enforce an aspect ratio on the container
     // as it causes stretching. We'll let the image's natural ratio prevail.
     return '';
+  }
+
+  get currentTrackAnalysis(): AudioTrackAnalysis | null {
+    if (!this.isAudio) return null;
+    return getAudioTrackAnalysis(this.mediaItem, this.selectedIndex);
+  }
+
+  get currentTrackLyrics(): string | null {
+    return getAudioTrackLyrics(this.currentTrackAnalysis);
+  }
+
+  get currentTrackCaption(): string | null {
+    return getAudioTrackCaption(this.currentTrackAnalysis);
+  }
+
+  get currentTrackStructureEntries(): SongStructureEntry[] {
+    return formatSongStructureEntries(this.currentTrackAnalysis);
+  }
+
+  get hasCurrentTrackText(): boolean {
+    return (
+      Boolean(this.currentTrackLyrics) ||
+      Boolean(this.currentTrackCaption) ||
+      this.currentTrackStructureEntries.length > 0
+    );
+  }
+
+  copyCurrentTrackText(): void {
+    const text = formatTrackAnalysisForCopy(this.currentTrackAnalysis);
+    if (!text) return;
+    this.clipboard.copy(text);
+    handleSuccessSnackbar(this.snackBar, 'Copied to clipboard!');
   }
 
   // --- AUDIO PLAYER LOGIC ---

@@ -39,7 +39,10 @@
       </button>
 
       <!-- Top Right: Status Chips -->
-      <div #settingsTrigger class="flex items-center gap-2 text-sm">
+      <div
+        #settingsTrigger
+        class="flex flex-wrap items-center justify-end gap-2 text-sm"
+      >
         <div
           (click)="toggleSettingsMenu(); $event.stopPropagation()"
           class="flex items-center gap-1.5 rounded-md bg-neutral-800 px-2 py-1 cursor-pointer hover:bg-neutral-700"
@@ -65,13 +68,21 @@
           </ng-container>
           {{ selectedGenerationModel }}
         </div>
-        <!-- Ratio -->
-        <button
+        <div
           (click)="toggleSettingsMenu(); $event.stopPropagation()"
-          class="rounded-md bg-neutral-800 px-2 py-1 cursor-pointer hover:bg-neutral-700"
+          class="contents"
         >
-          {{ aspectRatio.split(' ')[0] }}
-        </button>
+          <ng-content select="[flowExtraChips]"></ng-content>
+        </div>
+        <!-- Ratio -->
+        @if (hasAspectRatioOptions()) {
+          <button
+            (click)="toggleSettingsMenu(); $event.stopPropagation()"
+            class="rounded-md bg-neutral-800 px-2 py-1 cursor-pointer hover:bg-neutral-700"
+          >
+            {{ aspectRatio.split(' ')[0] }}
+          </button>
+        }
         <!-- Outputs -->
         <button
           (click)="toggleSettingsMenu(); $event.stopPropagation()"
@@ -106,18 +117,17 @@
     <div class="mt-4">
       <textarea
         (input)="onPromptInput($event)"
+        (keydown.control.enter)="
+          !isLoading && !isConcatenateVideo() && generateClicked.emit()
+        "
         [ngModel]="prompt"
         [disabled]="isConcatenateVideo()"
         class="w-full h-24 bg-transparent text-xl text-neutral-400 placeholder:text-neutral-600 focus:outline-none resize-none disabled:opacity-50 disabled:cursor-not-allowed"
-        [placeholder]="
-          isConcatenateVideo()
-            ? 'Prompt not needed for concatenation'
-            : isImageMode()
-              ? 'Generate an image with text...'
-              : 'Generate a video with text...'
-        "
+        [placeholder]="effectivePlaceholder()"
       ></textarea>
     </div>
+
+    <ng-content select="[flowExtraPromptContent]"></ng-content>
 
     <!-- Bottom Row: Images & Submit -->
     <div class="flex flex-wrap items-end justify-between gap-y-4">
@@ -197,7 +207,7 @@
         </ng-container>
 
         <!-- Unified Ingredients Mode Inputs -->
-        <ng-container *ngIf="isIngredientsToVideo() || isIngredientsToImage()">
+        <ng-container *ngIf="canShowReferenceImages()">
           <ng-container *ngIf="getSelectedModelObject() as model">
             <div
               class="relative h-20 w-20 cursor-pointer rounded-xl border-2 border-dashed border-neutral-700 bg-neutral-800 transition-colors hover:border-neutral-500 hover:bg-neutral-700 flex items-center justify-center"
@@ -232,12 +242,14 @@
                   [src]="ref.previewUrl"
                   class="h-full w-full object-cover"
                 />
-                <ng-container
-                  *ngTemplateOutlet="
-                    editOverlay;
-                    context: {index: i, ref: ref, small: true}
-                  "
-                ></ng-container>
+                <ng-container *ngIf="canEditReferenceImages">
+                  <ng-container
+                    *ngTemplateOutlet="
+                      editOverlay;
+                      context: {index: i, ref: ref, small: true}
+                    "
+                  ></ng-container>
+                </ng-container>
                 <button
                   (click)="
                     $event.stopPropagation();
@@ -305,6 +317,7 @@
             *ngIf="mode === 'Ingredients to Video' && isOmniModel()"
             class="relative h-20 w-20 cursor-pointer rounded-xl border-2 border-dashed border-neutral-700 bg-neutral-800 transition-colors hover:border-neutral-500 hover:bg-neutral-700 flex flex-col items-center justify-center"
             (click)="!referenceAudio && openAudioSelectorForReference.emit()"
+            [matTooltip]="referenceAudio?.name || ''"
           >
             <ng-container *ngIf="!referenceAudio">
               <mat-icon class="text-neutral-500">audiotrack</mat-icon>
@@ -437,16 +450,18 @@
 
       <!-- Right: Generate Button -->
       <div class="flex items-center gap-2">
-        <button
-          mat-raised-button
-          color="primary"
-          (click)="rewriteClicked.emit()"
-          [disabled]="isLoading"
-          class="!rounded-full"
-        >
-          <mat-icon>drive_file_rename_outline</mat-icon>
-          Rewrite
-        </button>
+        @if (showRewrite) {
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="rewriteClicked.emit()"
+            [disabled]="isLoading"
+            class="!rounded-full"
+          >
+            <mat-icon>drive_file_rename_outline</mat-icon>
+            Rewrite
+          </button>
+        }
         <button
           mat-raised-button
           class="!bg-white !rounded-full"
@@ -525,9 +540,13 @@
   @if (isSettingsMenuOpen()) {
     <div
       #settingsMenu
-      class="absolute right-0 bottom-full z-20 mb-2 w-[500px] rounded-xl bg-neutral-800 p-4 text-white shadow-lg"
+      class="absolute right-0 bottom-full z-20 mb-2 w-[500px] max-w-[calc(100vw-2rem)] rounded-xl bg-neutral-800 p-4 text-white shadow-lg"
     >
-      <div class="grid grid-cols-2 gap-3">
+      <div
+        class="grid gap-3"
+        [class.grid-cols-2]="hasAspectRatioOptions()"
+        [class.grid-cols-1]="!hasAspectRatioOptions()"
+      >
         <!-- Model Dropdown -->
         <div class="relative">
           <label
@@ -565,7 +584,7 @@
                   "
                   [disabled]="
                     isVideoToImage() &&
-                    !model.capabilities?.supportsVideoReference
+                    !model.capabilities.supportsVideoReference
                   "
                 >
                   <div class="flex items-center gap-2">
@@ -580,6 +599,10 @@
                         [svgIcon]="model.icon || ''"
                         class="!h-5 !w-5"
                       ></mat-icon>
+                    } @else if (model.icon) {
+                      <mat-icon class="!h-5 !w-5 !text-base">{{
+                        model.icon
+                      }}</mat-icon>
                     }
                     {{ model.viewValue }}
                   </div>
@@ -590,76 +613,82 @@
         </div>
 
         <!-- Aspect Ratio Dropdown -->
-        <div class="relative">
-          <label
-            for="aspect-ratio"
-            class="block text-xs font-medium text-neutral-400 mb-1.5"
-            >Aspect Ratio</label
-          >
-          <button
-            (click)="
-              $event.stopPropagation();
-              isSettingsDropdownOpen.set(
-                isSettingsDropdownOpen() === 'aspect' ? null : 'aspect'
-              )
-            "
-            class="relative w-full flex items-center justify-between rounded-lg bg-neutral-700 px-3 py-2 text-left text-sm"
-          >
-            <span class="flex items-center gap-2 min-w-0">
-              <mat-icon class="flex-shrink-0">
-                {{ getAspectRatioIcon(aspectRatio) }}
+        @if (hasAspectRatioOptions()) {
+          <div class="relative">
+            <label
+              for="aspect-ratio"
+              class="block text-xs font-medium text-neutral-400 mb-1.5"
+              >Aspect Ratio</label
+            >
+            <button
+              (click)="
+                $event.stopPropagation();
+                isSettingsDropdownOpen.set(
+                  isSettingsDropdownOpen() === 'aspect' ? null : 'aspect'
+                )
+              "
+              class="relative w-full flex items-center justify-between rounded-lg bg-neutral-700 px-3 py-2 text-left text-sm"
+            >
+              <span class="flex items-center gap-2 min-w-0">
+                <mat-icon class="flex-shrink-0">
+                  {{ getAspectRatioIcon(aspectRatio) }}
+                </mat-icon>
+                <span class="truncate whitespace-nowrap">{{
+                  aspectRatio
+                }}</span>
+              </span>
+              <mat-icon
+                class="transition-transform"
+                [class.rotate-180]="isSettingsDropdownOpen() === 'aspect'"
+              >
+                expand_more
               </mat-icon>
-              <span class="truncate whitespace-nowrap">{{ aspectRatio }}</span>
-            </span>
-            <mat-icon
-              class="transition-transform"
-              [class.rotate-180]="isSettingsDropdownOpen() === 'aspect'"
-            >
-              expand_more
-            </mat-icon>
-          </button>
-          @if (isSettingsDropdownOpen() === 'aspect') {
-            <div
-              class="absolute left-0 top-full z-30 mt-1 w-full rounded-lg bg-neutral-700 p-1 shadow-lg max-h-60 overflow-y-auto"
-            >
-              @if (aspectRatioOptions.length > 0) {
-                @for (option of aspectRatioOptions; track option.value) {
+            </button>
+            @if (isSettingsDropdownOpen() === 'aspect') {
+              <div
+                class="absolute left-0 top-full z-30 mt-1 w-full rounded-lg bg-neutral-700 p-1 shadow-lg max-h-60 overflow-y-auto"
+              >
+                @if (aspectRatioOptions.length > 0) {
+                  @for (option of aspectRatioOptions; track option.value) {
+                    <button
+                      (click)="selectNewAspectRatio(option.value)"
+                      class="block w-full px-3 py-1.5 text-left text-sm rounded hover:bg-neutral-600"
+                      [disabled]="option.disabled"
+                      [class.opacity-50]="option.disabled"
+                      [class.cursor-not-allowed]="option.disabled"
+                    >
+                      <div class="flex items-center gap-2 whitespace-nowrap">
+                        <mat-icon>{{
+                          option.icon || 'crop_landscape'
+                        }}</mat-icon>
+                        {{ option.viewValue.replace('\n', '') }}
+                      </div>
+                    </button>
+                  }
+                } @else {
                   <button
-                    (click)="selectNewAspectRatio(option.value)"
+                    (click)="selectNewAspectRatio('16:9')"
                     class="block w-full px-3 py-1.5 text-left text-sm rounded hover:bg-neutral-600"
-                    [disabled]="option.disabled"
-                    [class.opacity-50]="option.disabled"
-                    [class.cursor-not-allowed]="option.disabled"
                   >
                     <div class="flex items-center gap-2 whitespace-nowrap">
-                      <mat-icon>{{ option.icon || 'crop_landscape' }}</mat-icon>
-                      {{ option.viewValue.replace('\n', '') }}
+                      <mat-icon>crop_landscape</mat-icon>
+                      Horizontal (16:9)
+                    </div>
+                  </button>
+                  <button
+                    (click)="selectNewAspectRatio('9:16')"
+                    class="block w-full px-3 py-1.5 text-left text-sm rounded hover:bg-neutral-600"
+                  >
+                    <div class="flex items-center gap-2 whitespace-nowrap">
+                      <mat-icon>crop_portrait</mat-icon>
+                      Vertical (9:16)
                     </div>
                   </button>
                 }
-              } @else {
-                <button
-                  (click)="selectNewAspectRatio('16:9')"
-                  class="block w-full px-3 py-1.5 text-left text-sm rounded hover:bg-neutral-600"
-                >
-                  <div class="flex items-center gap-2 whitespace-nowrap">
-                    <mat-icon>crop_landscape</mat-icon>
-                    Horizontal (16:9)
-                  </div>
-                </button>
-                <button
-                  (click)="selectNewAspectRatio('9:16')"
-                  class="block w-full px-3 py-1.5 text-left text-sm rounded hover:bg-neutral-600"
-                >
-                  <div class="flex items-center gap-2 whitespace-nowrap">
-                    <mat-icon>crop_portrait</mat-icon>
-                    Vertical (9:16)
-                  </div>
-                </button>
-              }
-            </div>
-          }
-        </div>
+              </div>
+            }
+          </div>
+        }
       </div>
 
       <div
@@ -819,6 +848,8 @@
           </div>
         }
       </div>
+
+      <ng-content select="[flowExtraSettings]"></ng-content>
     </div>
   }
 </div>

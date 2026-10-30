@@ -1407,3 +1407,158 @@ class TestLyria3LyricsAndStructure:
                 "generation_time": pytest.approx(0, abs=10.0),
             },
         )
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.SourceAssetRepository")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GeminiService")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_lyria3_enhance_preserves_original_and_negative_on_retry(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_gemini_cls,
+        mock_repo_cls,
+        mock_asset_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_repo = AsyncMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_asset_repo = AsyncMock()
+        mock_asset_repo.get_by_id.return_value = MagicMock(
+            id=10,
+            workspace_id=1,
+            scope=AssetScopeEnum.PRIVATE,
+            mime_type=MimeTypeEnum.IMAGE_JPEG,
+            gcs_uri="gs://bucket/ref.jpg",
+        )
+        mock_asset_repo_cls.return_value = mock_asset_repo
+
+        mock_gemini = MagicMock()
+        mock_gemini.enhance_prompt_from_dto = AsyncMock(
+            return_value="Cinematic orchestral swell with roaring engines."
+        )
+        mock_gemini_cls.return_value = mock_gemini
+
+        mock_gcs.return_value = MagicMock(
+            store_to_gcs=MagicMock(return_value="gs://foo/lyria3_retry.mp3")
+        )
+        ok_interaction = MagicMock(
+            id="inter_ok",
+            output_audio=MagicMock(
+                type="audio", data="SGVsbG8=", mime_type="audio/mpeg"
+            ),
+            steps=[],
+            outputs=[],
+        )
+        mock_omni_client = MagicMock()
+        mock_omni_client.interactions.create.side_effect = [
+            Exception("400 {'code': 'content_blocked'}"),
+            ok_interaction,
+        ]
+        mock_genai_setup.get_omni_client.return_value = mock_omni_client
+
+        user_prompt = (
+            "Warm indie folk acoustic guitar featuring roaring engines"
+        )
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt=user_prompt,
+            negative_prompt="heavy percussion",
+            model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+            enhance_prompt=True,
+            source_asset_ids=[10],
+        )
+
+        _process_audio_in_background(
+            media_item_id=403,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        assert dto.prompt == user_prompt
+        extra_parts = mock_gemini.enhance_prompt_from_dto.call_args.kwargs[
+            "extra_parts"
+        ]
+        assert len(extra_parts) == 1
+        assert extra_parts[0].file_data.file_uri == "gs://bucket/ref.jpg"
+        assert mock_omni_client.interactions.create.call_count == 2
+
+        first_text = mock_omni_client.interactions.create.call_args_list[
+            0
+        ].kwargs["input"][0]["text"]
+        retry_text = mock_omni_client.interactions.create.call_args_list[
+            1
+        ].kwargs["input"][0]["text"]
+
+        assert first_text.startswith("Cinematic orchestral swell")
+        assert first_text.endswith("\n\nAvoid: heavy percussion")
+        assert retry_text.startswith("Warm indie folk acoustic guitar.")
+        assert retry_text.endswith("\n\nAvoid: heavy percussion")
+        assert mock_repo.update.call_args.args[1]["prompt"] == retry_text
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.SourceAssetRepository")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GeminiService")
+    def test_process_lyria3_validates_references_before_enhance_prompt(
+        self,
+        mock_gemini_cls,
+        mock_repo_cls,
+        mock_asset_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_repo = AsyncMock()
+        mock_repo_cls.return_value = mock_repo
+
+        mock_asset_repo = AsyncMock()
+        mock_asset_repo.get_by_id.return_value = MagicMock(
+            id=99,
+            workspace_id=999,
+            scope=AssetScopeEnum.PRIVATE,
+            mime_type=MimeTypeEnum.IMAGE_PNG,
+            gcs_uri="gs://bucket/foreign.png",
+        )
+        mock_asset_repo_cls.return_value = mock_asset_repo
+
+        mock_gemini = MagicMock()
+        mock_gemini.enhance_prompt_from_dto = AsyncMock()
+        mock_gemini_cls.return_value = mock_gemini
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Ambient pads",
+            model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+            enhance_prompt=True,
+            source_asset_ids=[99],
+        )
+
+        _process_audio_in_background(
+            media_item_id=404,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_gemini.enhance_prompt_from_dto.assert_not_called()
+        mock_repo.update.assert_called_once_with(
+            404,
+            {
+                "status": JobStatusEnum.FAILED,
+                "error_message": (
+                    "Source asset 99 was not found in this workspace."
+                ),
+            },
+        )

@@ -90,6 +90,8 @@ export class AudioComponent implements OnInit {
   }
 
   isLoading = false;
+  isRewritingPrompt = false;
+  uploadingReferenceCount = 0;
 
   // Job Tracking
   activeAudioJob$: Observable<MediaItem | null>;
@@ -503,11 +505,14 @@ export class AudioComponent implements OnInit {
 
   onReferenceImageDrop(event: DragEvent) {
     event.preventDefault();
+    if (this.selectedModel !== 'lyria') return;
+
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
 
     const maxRefs = this.lyriaMaxReferenceImages;
-    let availableSlots = maxRefs - this.referenceImages.length;
+    let availableSlots =
+      maxRefs - this.referenceImages.length - this.uploadingReferenceCount;
     if (availableSlots <= 0) {
       handleInfoSnackbar(
         this.snackBar,
@@ -520,8 +525,18 @@ export class AudioComponent implements OnInit {
       const file = files[i];
       if (file.type.startsWith('image/')) {
         availableSlots--;
+        this.uploadingReferenceCount++;
         this.sourceAssetService
           .uploadAsset(file, {assetType: AssetTypeEnum.GENERIC_IMAGE})
+          .pipe(
+            finalize(
+              () =>
+                (this.uploadingReferenceCount = Math.max(
+                  0,
+                  this.uploadingReferenceCount - 1,
+                )),
+            ),
+          )
           .subscribe({
             next: (asset: SourceAssetResponseDto) => {
               if (asset && asset.id) {
@@ -546,7 +561,10 @@ export class AudioComponent implements OnInit {
   private processReferenceInput(
     result: MediaItemSelection | SourceAssetResponseDto,
   ) {
-    if (this.referenceImages.length >= this.lyriaMaxReferenceImages) {
+    if (
+      this.selectedModel !== 'lyria' ||
+      this.referenceImages.length >= this.lyriaMaxReferenceImages
+    ) {
       return;
     }
 
@@ -628,6 +646,14 @@ export class AudioComponent implements OnInit {
   }
 
   generate() {
+    if (this.isLoading || this.isRewritingPrompt) return;
+    if (this.uploadingReferenceCount > 0) {
+      handleInfoSnackbar(
+        this.snackBar,
+        'Please wait for reference images to finish uploading.',
+      );
+      return;
+    }
     if (!this.prompt.trim()) {
       handleInfoSnackbar(
         this.snackBar,
@@ -636,6 +662,7 @@ export class AudioComponent implements OnInit {
       return;
     }
 
+    this.showErrorOverlay = true;
     this.isLoading = true;
 
     const activeWorkspaceId = this.workspaceStateService.getActiveWorkspaceId();
@@ -720,7 +747,9 @@ export class AudioComponent implements OnInit {
     if (
       this.selectedModel !== 'lyria' ||
       !this.prompt.trim() ||
-      this.isLoading
+      this.isLoading ||
+      this.isRewritingPrompt ||
+      this.uploadingReferenceCount > 0
     ) {
       return;
     }
@@ -734,21 +763,21 @@ export class AudioComponent implements OnInit {
       return;
     }
 
-    this.isLoading = true;
-    this.prompt = '';
+    this.isRewritingPrompt = true;
     this.searchService
       .rewritePrompt({
         targetType: 'audio',
         userPrompt: promptToSend,
       })
-      .pipe(finalize(() => (this.isLoading = false)))
+      .pipe(finalize(() => (this.isRewritingPrompt = false)))
       .subscribe({
         next: (response: {prompt: string}) => {
-          this.prompt = response.prompt;
-          this.saveState();
+          if (this.selectedModel === 'lyria') {
+            this.prompt = response.prompt;
+            this.saveState();
+          }
         },
         error: error => {
-          this.prompt = promptToSend;
           handleErrorSnackbar(this.snackBar, error, 'Rewrite prompt');
         },
       });
@@ -769,8 +798,6 @@ export class AudioComponent implements OnInit {
 
     const index = event.selectedIndex ?? 0;
     const remixState = {
-      parentMediaItemId: item.id,
-      parentMediaIndex: index,
       generationModel: 'gemini-omni',
       isOmniMode: true,
       referenceAudio: {

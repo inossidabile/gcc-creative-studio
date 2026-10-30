@@ -466,10 +466,27 @@ def _process_video_in_background(
                                 parent_media_item = await media_repo.get_by_id(
                                     request_dto.parent_media_item_id
                                 )
+                                parent_mime = (
+                                    getattr(
+                                        parent_media_item.mime_type,
+                                        "value",
+                                        parent_media_item.mime_type,
+                                    )
+                                    if parent_media_item
+                                    else ""
+                                ) or ""
                                 if (
-                                    parent_media_item
-                                    and parent_media_item.raw_data
+                                    not parent_media_item
+                                    or parent_media_item.workspace_id
+                                    != request_dto.workspace_id
+                                    or not str(parent_mime).startswith("video/")
                                 ):
+                                    worker_logger.warning(
+                                        "Parent MediaItem %s is not a valid video in workspace %s; falling back to Turn 1.",
+                                        request_dto.parent_media_item_id,
+                                        request_dto.workspace_id,
+                                    )
+                                elif parent_media_item.raw_data:
                                     interaction1_id = (
                                         parent_media_item.raw_data.get(
                                             "interaction_id"

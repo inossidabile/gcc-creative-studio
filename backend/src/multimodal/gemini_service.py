@@ -15,6 +15,7 @@
 
 """Gemini Service for multimodal content generation."""
 
+import asyncio
 import json
 import logging
 from enum import Enum
@@ -120,6 +121,7 @@ class GeminiService:
         prompt_template: str,
         response_mime_type: ResponseMimeTypeEnum = ResponseMimeTypeEnum.JSON,
         response_schema: type[BaseModel] | None = None,
+        extra_parts: list[types.Part] | None = None,
     ) -> str:
         """Rewrites a user prompt using Gemini into a structured JSON format.
 
@@ -133,6 +135,9 @@ class GeminiService:
 
         """
         full_prompt = f"{prompt_template} {original_prompt}"
+        contents: Any = (
+            [*extra_parts, full_prompt] if extra_parts else full_prompt
+        )
 
         try:
             response = None
@@ -142,7 +147,7 @@ class GeminiService:
                 )
                 response = self.client.models.generate_content(
                     model=self.rewriter_model,
-                    contents=full_prompt,
+                    contents=contents,
                     config=types.GenerateContentConfig(
                         response_mime_type=response_mime_type.value,
                         response_schema=response_schema,
@@ -151,7 +156,7 @@ class GeminiService:
             elif response_mime_type.value == ResponseMimeTypeEnum.TEXT.value:
                 response = self.client.models.generate_content(
                     model=self.rewriter_model,
-                    contents=full_prompt,
+                    contents=contents,
                     config=types.GenerateContentConfig(
                         response_mime_type=response_mime_type.value,
                     ),
@@ -239,6 +244,7 @@ class GeminiService:
         dto: CreateImagenDto | CreateVeoDto | CreateAudioDto,
         target_type: PromptTargetEnum,
         response_mime_type: ResponseMimeTypeEnum = ResponseMimeTypeEnum.JSON,
+        extra_parts: list[types.Part] | None = None,
     ) -> str:
         """Enhances a partially filled DTO by converting it to a string.
 
@@ -254,11 +260,17 @@ class GeminiService:
 
         """
         if target_type == PromptTargetEnum.AUDIO:
-            return self.generate_structured_prompt(
-                original_prompt=dto.prompt,
+            prompt_text = dto.prompt
+            negative = (getattr(dto, "negative_prompt", None) or "").strip()
+            if negative:
+                prompt_text = f"{prompt_text}\nElements to avoid: {negative}"
+            return await asyncio.to_thread(
+                self.generate_structured_prompt,
+                original_prompt=prompt_text,
                 target_type=PromptTargetEnum.AUDIO,
                 prompt_template=REWRITE_AUDIO_TEXT_PROMPT_TEMPLATE,
                 response_mime_type=ResponseMimeTypeEnum.TEXT,
+                extra_parts=extra_parts,
             )
 
         if target_type not in [PromptTargetEnum.IMAGE, PromptTargetEnum.VIDEO]:

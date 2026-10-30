@@ -271,6 +271,8 @@
           [selectedGenerationModel]="selectedGenerationModelName()"
           [isLoading]="
             isLoading ||
+            isRewritingPrompt ||
+            uploadingReferenceCount > 0 ||
             (activeAudioJob$ | async)?.status === JobStatus.PROCESSING
           "
           [placeholder]="

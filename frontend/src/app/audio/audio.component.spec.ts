@@ -34,7 +34,7 @@ import {MatIconTestingModule} from '@angular/material/icon/testing';
 import {By} from '@angular/platform-browser';
 import {CUSTOM_ELEMENTS_SCHEMA} from '@angular/core';
 import {Router} from '@angular/router';
-import {BehaviorSubject, of, throwError} from 'rxjs';
+import {BehaviorSubject, Subject, of, throwError} from 'rxjs';
 
 import {AudioComponent} from './audio.component';
 import {LanguageEnum, VoiceEnum} from './audio.constants';
@@ -443,7 +443,7 @@ describe('AudioComponent', () => {
     expect(searchServiceSpy.clearActiveAudioJob).toHaveBeenCalled();
   });
 
-  it('should navigate to /video in Omni mode with referenceAudio when handleEditWithOmni is triggered', () => {
+  it('should navigate to /video in Omni mode with referenceAudio and no parentMediaItemId when handleEditWithOmni is triggered', () => {
     const audioItem = {
       id: 88,
       status: JobStatus.COMPLETED,
@@ -458,8 +458,6 @@ describe('AudioComponent', () => {
     expect(routerSpy.navigate).toHaveBeenCalledWith(['/video'], {
       state: {
         remixState: {
-          parentMediaItemId: 88,
-          parentMediaIndex: 1,
           generationModel: 'gemini-omni',
           isOmniMode: true,
           referenceAudio: {
@@ -471,5 +469,88 @@ describe('AudioComponent', () => {
         },
       },
     });
+  });
+
+  it('should keep completed audio lightbox mounted during rewritePrompt and ignore late response if switched to TTS', () => {
+    activeAudioJobSubject.next({
+      id: 91,
+      status: JobStatus.COMPLETED,
+      mimeType: 'audio/mpeg',
+      prompt: 'Completed track',
+      presignedUrls: ['https://signed/91.mp3'],
+    } as unknown as MediaItem);
+    fixture.detectChanges();
+    expect(
+      fixture.debugElement.query(By.css('app-media-lightbox')),
+    ).toBeTruthy();
+
+    const rewriteSubject = new Subject<{prompt: string}>();
+    searchServiceSpy.rewritePrompt.and.returnValue(
+      rewriteSubject.asObservable(),
+    );
+
+    component.selectedModel = 'lyria';
+    component.prompt = 'ambient synth';
+    component.rewritePrompt();
+    fixture.detectChanges();
+
+    expect(component.isLoading).toBeFalse();
+    expect(component.isRewritingPrompt).toBeTrue();
+    expect(component.prompt).toBe('ambient synth');
+    expect(
+      fixture.debugElement.query(By.css('app-media-lightbox')),
+    ).toBeTruthy();
+
+    // User switches to Text to Speech before rewrite finishes
+    component.onModeChanged('Text to Speech');
+    component.prompt = 'Exact TTS script';
+    rewriteSubject.next({prompt: 'Lush ambient synth pad at 80 BPM'});
+    rewriteSubject.complete();
+
+    expect(component.isRewritingPrompt).toBeFalse();
+    expect(component.prompt).toBe('Exact TTS script');
+  });
+
+  it('should reset showErrorOverlay to true on subsequent generate() after dismissing an error', () => {
+    component.closeErrorOverlay();
+    expect(component.showErrorOverlay).toBeFalse();
+
+    component.prompt = 'Retry acoustic melody';
+    component.generate();
+
+    expect(component.showErrorOverlay).toBeTrue();
+  });
+
+  it('should block generate() while dropped reference images are uploading and ignore late upload after switching to TTS', () => {
+    const uploadSubject = new Subject<any>();
+    sourceAssetServiceSpy.uploadAsset.and.returnValue(
+      uploadSubject.asObservable(),
+    );
+
+    const file = new File(['img'], 'cover.png', {type: 'image/png'});
+    const dropEvent = {
+      preventDefault: jasmine.createSpy('preventDefault'),
+      dataTransfer: {files: [file]},
+    } as unknown as DragEvent;
+
+    component.selectedModel = 'lyria';
+    component.prompt = 'Cinematic score';
+    component.onReferenceImageDrop(dropEvent);
+
+    expect(component.uploadingReferenceCount).toBe(1);
+    component.generate();
+    expect(searchServiceSpy.startAudioGeneration).not.toHaveBeenCalled();
+
+    // Switch to TTS before upload finishes; late upload must not be added
+    component.onModeChanged('Text to Speech');
+    uploadSubject.next({
+      id: 55,
+      gcsUri: 'gs://bucket/55.png',
+      presignedUrl: 'https://signed/55.png',
+    });
+    uploadSubject.complete();
+
+    expect(component.uploadingReferenceCount).toBe(0);
+    expect(component.referenceImages.length).toBe(0);
   });
 });

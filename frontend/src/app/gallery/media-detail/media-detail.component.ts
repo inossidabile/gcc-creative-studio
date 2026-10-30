@@ -547,8 +547,6 @@ export class MediaDetailComponent implements OnDestroy {
     const isAudio = mime.startsWith('audio/');
 
     const remixState: any = {
-      parentMediaItemId: this.mediaItem.id,
-      parentMediaIndex: index,
       generationModel: 'gemini-omni',
       isOmniMode: true,
     };
@@ -564,6 +562,10 @@ export class MediaDetailComponent implements OnDestroy {
           'Audio Reference',
       };
     } else {
+      if ((this.mediaItem.itemType || 'media_item') === 'media_item') {
+        remixState.parentMediaItemId = this.mediaItem.id;
+        remixState.parentMediaIndex = index;
+      }
       remixState.referenceVideo = {
         id: this.mediaItem.id,
         type: this.mediaItem.itemType || 'media_item',

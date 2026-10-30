@@ -70,13 +70,19 @@ from src.users.user_model import UserModel
 logger = logging.getLogger(__name__)
 
 
-def _build_lyria3_prompt(request_dto: CreateAudioDto) -> str:
+def _build_lyria3_prompt(
+    request_dto: CreateAudioDto,
+    prompt_override: str | None = None,
+) -> str:
     """Builds the text input for a Lyria 3 interaction.
 
     Lyria 3 has no dedicated ``negative_prompt`` parameter, so a user-provided
     negative prompt is folded into the text as explicit guidance.
     """
-    prompt = (request_dto.prompt or "").strip()
+    base_prompt = (
+        prompt_override if prompt_override is not None else request_dto.prompt
+    )
+    prompt = (base_prompt or "").strip()
     negative = (request_dto.negative_prompt or "").strip()
     if negative:
         prompt = f"{prompt}\n\nAvoid: {negative}"
@@ -320,23 +326,50 @@ def _process_audio_in_background(
                         output_mime_type = MimeTypeEnum.AUDIO_WAV
                         # Set when a reworded prompt (not the user's) rendered.
                         effective_prompt: str | None = None
+                        music_prompt = request_dto.prompt
+                        lyria3_image_inputs: list[dict[str, str]] = []
                         source_assets: list[SourceAssetLink] = []
                         source_media_items: list[SourceMediaItemLink] = []
                         audio_analysis: dict[str, Any] | None = None
 
                         if (
+                            request_dto.model in AudioService.LYRIA_3_MODELS
+                            and (
+                                request_dto.source_asset_ids
+                                or request_dto.source_media_items
+                            )
+                        ):
+                            (
+                                lyria3_image_inputs,
+                                source_assets,
+                                source_media_items,
+                            ) = await _resolve_lyria3_reference_images(
+                                request_dto=request_dto,
+                                media_repo=media_repo,
+                                source_asset_repo=SourceAssetRepository(db),
+                            )
+
+                        if (
                             request_dto.enhance_prompt
                             and request_dto.model in AudioService.MUSIC_MODELS
                         ):
+                            image_parts = [
+                                types.Part.from_uri(
+                                    file_uri=img["uri"],
+                                    mime_type=img["mime_type"],
+                                )
+                                for img in lyria3_image_inputs
+                            ]
                             rewritten_prompt = (
                                 await gemini_service.enhance_prompt_from_dto(
                                     dto=request_dto,
                                     target_type=PromptTargetEnum.AUDIO,
+                                    extra_parts=image_parts or None,
                                 )
                             )
                             if rewritten_prompt and rewritten_prompt.strip():
-                                request_dto.prompt = rewritten_prompt.strip()
-                                effective_prompt = request_dto.prompt
+                                music_prompt = rewritten_prompt.strip()
+                                effective_prompt = music_prompt
 
                         if request_dto.model in AudioService.GEMINI_MODELS:
                             client = GenAIModelSetup.init()
@@ -487,30 +520,24 @@ def _process_audio_in_background(
                         elif request_dto.model in AudioService.LYRIA_3_MODELS:
                             # Lyria 3 is only exposed through the Interactions
                             # API on the global endpoint (no :predict support).
-                            lyria3_image_inputs: list[dict[str, str]] = []
-                            if (
-                                request_dto.source_asset_ids
-                                or request_dto.source_media_items
-                            ):
-                                source_asset_repo = SourceAssetRepository(db)
-                                (
-                                    lyria3_image_inputs,
-                                    source_assets,
-                                    source_media_items,
-                                ) = await _resolve_lyria3_reference_images(
-                                    request_dto=request_dto,
-                                    media_repo=media_repo,
-                                    source_asset_repo=source_asset_repo,
-                                )
-
                             lyria_client = GenAIModelSetup.get_omni_client()
 
+                            lyria3_initial_prompt = _build_lyria3_prompt(
+                                request_dto, prompt_override=music_prompt
+                            )
                             lyria3_state: dict[str, Any] = {
-                                "prompt": _build_lyria3_prompt(request_dto),
+                                "prompt": lyria3_initial_prompt,
                                 "blocked": False,
                             }
-                            lyria3_retry_prompt = _simplify_lyria3_prompt(
+                            simplified_head = _simplify_lyria3_prompt(
                                 request_dto.prompt or ""
+                            )
+                            lyria3_retry_prompt = (
+                                _build_lyria3_prompt(
+                                    request_dto, prompt_override=simplified_head
+                                )
+                                if simplified_head
+                                else ""
                             )
 
                             async def run_lyria3(prompt: str) -> Any:
@@ -620,9 +647,7 @@ def _process_audio_in_background(
                                 raise ValueError(
                                     LYRIA_3_CONTENT_BLOCKED_MESSAGE
                                 )
-                            if lyria3_state["prompt"] != _build_lyria3_prompt(
-                                request_dto
-                            ):
+                            if lyria3_state["prompt"] != lyria3_initial_prompt:
                                 # Record the brief that actually rendered;
                                 # ``original_prompt`` keeps the user's text.
                                 effective_prompt = lyria3_state["prompt"]
@@ -645,9 +670,7 @@ def _process_audio_in_background(
                                         parameters_dict, parameters_value
                                     )
 
-                                    instance_dict = {
-                                        "prompt": request_dto.prompt
-                                    }
+                                    instance_dict = {"prompt": music_prompt}
                                     if request_dto.negative_prompt:
                                         instance_dict["negative_prompt"] = (
                                             request_dto.negative_prompt
@@ -741,7 +764,8 @@ def _process_audio_in_background(
                                     gemini_service.generate_media_metadata,
                                     prompt=(
                                         "Describe this generated audio based"
-                                        f" on prompt: {request_dto.prompt}"
+                                        " on prompt: "
+                                        f"{effective_prompt or request_dto.prompt}"
                                     ),
                                     media_uris=permanent_gcs_uris,
                                     model_name=request_dto.metadata_generation_model,

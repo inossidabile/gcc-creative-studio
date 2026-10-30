@@ -465,7 +465,7 @@ describe('MediaDetailComponent', () => {
       expect(host.textContent).toContain('0');
     });
 
-    it('uses title or Audio Reference instead of raw originalPrompt when sending audio to Omni', () => {
+    it('omits parentMediaItemId and uses Audio Reference fallback when sending audio to Omni', () => {
       mockGalleryService.getMedia.and.returnValue(
         of({
           id: 502,
@@ -492,8 +492,6 @@ describe('MediaDetailComponent', () => {
       expect(mockRouter.navigate).toHaveBeenCalledWith(['/video'], {
         state: {
           remixState: {
-            parentMediaItemId: 502,
-            parentMediaIndex: 0,
             generationModel: 'gemini-omni',
             isOmniMode: true,
             referenceAudio: {
@@ -505,6 +503,68 @@ describe('MediaDetailComponent', () => {
           },
         },
       });
+    });
+
+    it('sets parentMediaItemId only for video media_item and omits it for uploaded video source_asset', () => {
+      mockGalleryService.getMedia.and.returnValue(
+        of({
+          id: 601,
+          workspaceId: 1,
+          createdAt: '2026-07-08T22:20:10Z',
+          itemType: 'media_item',
+          status: 'COMPLETED',
+          mimeType: 'video/mp4',
+          originalPrompt: 'Ocean waves',
+          gcsUris: ['gs://b/601.mp4'],
+          presignedUrls: ['https://example.com/601.mp4'],
+          presignedThumbnailUrls: ['https://example.com/601.jpg'],
+          metadata: {},
+        } as GalleryItem),
+      );
+
+      component.fetchMediaDetails(601, false);
+      component.handleEditWithOmni({
+        mediaItem: component.mediaItem,
+        selectedIndex: 0,
+      });
+
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/video'], {
+        state: {
+          remixState: jasmine.objectContaining({
+            parentMediaItemId: 601,
+            parentMediaIndex: 0,
+            isOmniMode: true,
+          }),
+        },
+      });
+
+      mockRouter.navigate.calls.reset();
+      component.mediaItem = {
+        id: 602,
+        workspaceId: 1,
+        createdAt: '2026-07-08T22:20:10Z',
+        itemType: 'source_asset',
+        status: 'COMPLETED',
+        mimeType: 'video/mp4',
+        gcsUris: ['gs://b/602.mp4'],
+        presignedUrls: ['https://example.com/602.mp4'],
+        presignedThumbnailUrls: [],
+        metadata: {},
+      } as GalleryItem;
+
+      component.handleEditWithOmni({
+        mediaItem: component.mediaItem,
+        selectedIndex: 0,
+      });
+
+      const navArgs = mockRouter.navigate.calls.mostRecent().args[1] as any;
+      expect(navArgs.state.remixState.parentMediaItemId).toBeUndefined();
+      expect(navArgs.state.remixState.referenceVideo).toEqual(
+        jasmine.objectContaining({
+          id: 602,
+          type: 'source_asset',
+        }),
+      );
     });
   });
 });

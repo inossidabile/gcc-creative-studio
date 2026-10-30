@@ -129,8 +129,21 @@ describe('FlowPromptBoxComponent', () => {
       expect(component.clearExternalUrl.emit).toHaveBeenCalled();
     });
 
-    it('should disable Nano Banana 2 Lite and enable Nano Banana 2 in Video to Image mode', () => {
-      component.generationModels = MODEL_CONFIGS;
+    it('should disable models without supportsVideoReference and enable Nano Banana 2 in Video to Image mode', () => {
+      const noVideoRefModel = {
+        value: 'legacy-image-model',
+        viewValue: 'Legacy Image Model',
+        type: 'IMAGE' as const,
+        capabilities: {
+          supportedModes: ['Text to Image' as const],
+          maxReferenceImages: 0,
+          supportedAspectRatios: ['1:1'],
+          supportedResolutions: ['1K' as const],
+          supportedDurations: [],
+          supportsVideoReference: false,
+        },
+      };
+      component.generationModels = [...MODEL_CONFIGS, noVideoRefModel];
       component.isSettingsMenuOpen.set(true);
       component.isSettingsDropdownOpen.set('model');
       fixture.detectChanges();
@@ -144,22 +157,32 @@ describe('FlowPromptBoxComponent', () => {
           !btn.nativeElement.textContent.includes('Lite') &&
           !btn.nativeElement.textContent.includes('Pro'),
       );
-      const nanoBanana2LiteBtn = modelButtons.find(btn =>
-        btn.nativeElement.textContent.includes('Nano Banana 2 Lite'),
+      const legacyBtn = modelButtons.find(btn =>
+        btn.nativeElement.textContent.includes('Legacy Image Model'),
       );
 
       expect(nanoBanana2Btn?.nativeElement.disabled).toBeFalse();
-      expect(nanoBanana2LiteBtn?.nativeElement.disabled).toBeTrue();
+      expect(legacyBtn?.nativeElement.disabled).toBeTrue();
     });
 
-    it('should not allow selecting Nano Banana 2 Lite in Video to Image mode', () => {
-      component.generationModels = MODEL_CONFIGS;
-      const nanoBanana2Lite = MODEL_CONFIGS.find(
-        m => m.value === 'gemini-3.1-flash-lite-image',
-      )!;
+    it('should not allow selecting a model without supportsVideoReference in Video to Image mode', () => {
+      const noVideoRefModel = {
+        value: 'legacy-image-model',
+        viewValue: 'Legacy Image Model',
+        type: 'IMAGE' as const,
+        capabilities: {
+          supportedModes: ['Text to Image' as const],
+          maxReferenceImages: 0,
+          supportedAspectRatios: ['1:1'],
+          supportedResolutions: ['1K' as const],
+          supportedDurations: [],
+          supportsVideoReference: false,
+        },
+      };
+      component.generationModels = [...MODEL_CONFIGS, noVideoRefModel];
       spyOn(component.modelSelected, 'emit');
 
-      component.selectInternalModel(nanoBanana2Lite);
+      component.selectInternalModel(noVideoRefModel);
 
       expect(component.modelSelected.emit).not.toHaveBeenCalled();
     });
@@ -346,8 +369,9 @@ describe('FlowPromptBoxComponent', () => {
     });
 
     it('should identify omni models correctly with isOmniModel', () => {
-      component.selectedGenerationModel = 'Gemini Omni Flash';
-      expect(component.isOmniModel()).toBeTrue();
+      expect(
+        component.isOmniModel({value: 'gemini-omni-flash-preview'}),
+      ).toBeTrue();
 
       component.selectedGenerationModel = 'Gemini Omni 1.1 Flash';
       expect(component.isOmniModel()).toBeTrue();
@@ -413,6 +437,74 @@ describe('FlowPromptBoxComponent', () => {
       expect(component.modelSelected.emit).toHaveBeenCalledWith(
         unsupportedModel,
       );
+    });
+  });
+
+  describe('Audio and Capability Guards', () => {
+    const lyria3Clip = MODEL_CONFIGS.find(
+      m => m.value === 'lyria-3-clip-preview',
+    )!;
+    const lyria2 = MODEL_CONFIGS.find(m => m.value === 'lyria-002')!;
+
+    beforeEach(() => {
+      component.generationModels = MODEL_CONFIGS;
+    });
+
+    it('should hide aspect ratio options when an audio model with empty supportedAspectRatios is selected', () => {
+      component.selectedGenerationModel = lyria3Clip.viewValue;
+      fixture.detectChanges();
+
+      expect(component.hasAspectRatioOptions()).toBeFalse();
+    });
+
+    it('should hide aspect ratio options when showAspectRatio is false', () => {
+      component.showAspectRatio = false;
+      fixture.detectChanges();
+
+      expect(component.hasAspectRatioOptions()).toBeFalse();
+    });
+
+    it('should hide Rewrite button when showRewrite is false', () => {
+      component.showRewrite = false;
+      fixture.detectChanges();
+
+      const buttons = fixture.debugElement.queryAll(By.css('button'));
+      const rewriteBtn = buttons.find(b =>
+        b.nativeElement.textContent.includes('Rewrite'),
+      );
+      expect(rewriteBtn).toBeUndefined();
+    });
+
+    it('should use custom placeholder when provided and audio fallback when in Music mode', () => {
+      component.mode = 'Music';
+      component.placeholder = '';
+      expect(component.effectivePlaceholder()).toBe(
+        'Describe the audio to generate...',
+      );
+
+      component.placeholder = 'Describe the music...';
+      expect(component.effectivePlaceholder()).toBe('Describe the music...');
+    });
+
+    it('should show reference images for Lyria 3 when allowReferenceImages is true and hide for Lyria 2', () => {
+      component.mode = 'Music';
+      component.allowReferenceImages = true;
+      component.canEditReferenceImages = false;
+      component.selectedGenerationModel = lyria3Clip.viewValue;
+      component.referenceImages = [
+        {previewUrl: 'https://example.com/ref.png', sourceAssetId: 1},
+      ];
+      fixture.detectChanges();
+
+      expect(component.canShowReferenceImages()).toBeTrue();
+      const editOverlays = fixture.debugElement.queryAll(
+        By.css('[matTooltip="Edit Image"]'),
+      );
+      expect(editOverlays.length).toBe(0);
+
+      component.selectedGenerationModel = lyria2.viewValue;
+      fixture.detectChanges();
+      expect(component.canShowReferenceImages()).toBeFalse();
     });
   });
 });

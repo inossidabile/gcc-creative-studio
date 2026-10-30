@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
+from pydantic import ValidationError
 import pytest
 
 from src.common.base_dto import GenerationModelEnum
 from src.common.schema.media_item_model import (
+    AssetRoleEnum,
     MediaItemModel,
     MimeTypeEnum,
     JobStatusEnum,
+    SourceMediaItemLink,
 )
+from src.source_assets.schema.source_asset_model import AssetScopeEnum
 from src.users.user_model import UserModel
 from src.audios.dto.create_audio_dto import CreateAudioDto
 from src.audios.audio_service import (
@@ -28,6 +33,7 @@ from src.audios.audio_service import (
     AudioService,
     _build_lyria3_prompt,
     _extract_lyria3_audio,
+    _extract_lyria3_text,
     _is_lyria3_content_blocked,
     _process_audio_in_background,
     _simplify_lyria3_prompt,
@@ -703,3 +709,701 @@ class TestLyria3Helpers:
         audio, mime = _extract_lyria3_audio(interaction)
         assert audio is None
         assert mime == "audio/mpeg"
+
+
+class TestCreateAudioDtoReferenceImages:
+
+    def test_rejects_empty_or_whitespace_prompt(self):
+        with pytest.raises(ValidationError, match="prompt cannot be empty"):
+            CreateAudioDto(
+                workspace_id=1,
+                prompt="   ",
+                model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+                source_asset_ids=[1],
+            )
+
+    def test_accepts_reference_images_on_lyria3_models(self):
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Cinematic ambient track",
+            model=GenerationModelEnum.LYRIA_3_PRO_PREVIEW,
+            source_asset_ids=[1, 2],
+            source_media_items=[
+                SourceMediaItemLink(
+                    media_item_id=10, media_index=0, role=AssetRoleEnum.INPUT
+                )
+            ],
+        )
+        assert dto.source_asset_ids == [1, 2]
+        assert len(dto.source_media_items or []) == 1
+
+    @pytest.mark.parametrize(
+        "unsupported_model",
+        [
+            GenerationModelEnum.LYRIA_002,
+            GenerationModelEnum.CHIRP_3,
+            GenerationModelEnum.GEMINI_2_5_FLASH_TTS,
+        ],
+    )
+    def test_rejects_reference_images_on_non_lyria3_models(
+        self, unsupported_model
+    ):
+        with pytest.raises(
+            ValidationError,
+            match="Reference images are only supported for Lyria 3 models",
+        ):
+            CreateAudioDto(
+                workspace_id=1,
+                prompt="Test prompt",
+                model=unsupported_model,
+                source_asset_ids=[1],
+            )
+
+    def test_rejects_more_than_ten_combined_reference_images(self):
+        with pytest.raises(
+            ValidationError, match="At most 10 reference images"
+        ):
+            CreateAudioDto(
+                workspace_id=1,
+                prompt="Test prompt",
+                model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+                source_asset_ids=[1, 2, 3, 4, 5, 6],
+                source_media_items=[
+                    SourceMediaItemLink(
+                        media_item_id=i, media_index=0, role=AssetRoleEnum.INPUT
+                    )
+                    for i in range(10, 15)
+                ],
+            )
+
+
+class TestLyria3ReferenceImages:
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.SourceAssetRepository")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria3_passes_multimodal_images_and_persists_lineage(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_media_repo_cls,
+        mock_asset_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_media_repo = AsyncMock()
+        mock_media_repo.get_by_id.return_value = MagicMock(
+            id=50,
+            workspace_id=1,
+            mime_type=MimeTypeEnum.IMAGE_PNG,
+            gcs_uris=["gs://bucket/gen_0.png", "gs://bucket/gen_1.png"],
+        )
+        mock_media_repo_cls.return_value = mock_media_repo
+
+        ws_asset = MagicMock(
+            id=11,
+            workspace_id=1,
+            scope=AssetScopeEnum.PRIVATE,
+            mime_type=MimeTypeEnum.IMAGE_JPEG,
+            gcs_uri="gs://bucket/upload_11.jpg",
+        )
+        system_asset = MagicMock(
+            id=12,
+            workspace_id=999,
+            scope=AssetScopeEnum.SYSTEM,
+            mime_type="image/webp",
+            gcs_uri="gs://bucket/system_12.webp",
+        )
+        mock_asset_repo = AsyncMock()
+        mock_asset_repo.get_by_id.side_effect = [ws_asset, system_asset]
+        mock_asset_repo_cls.return_value = mock_asset_repo
+
+        mock_gcs_singleton = MagicMock()
+        mock_gcs_singleton.store_to_gcs.return_value = "gs://foo/lyria3_ref.mp3"
+        mock_gcs.return_value = mock_gcs_singleton
+
+        interaction = MagicMock(
+            id="int-ref",
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mpeg", data="SGVsbG8="
+            ),
+        )
+        mock_client = MagicMock()
+        mock_client.interactions.create.return_value = interaction
+        mock_genai_setup.get_omni_client.return_value = mock_client
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Ethereal soundtrack matching these visuals",
+            model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+            sample_count=1,
+            source_asset_ids=[11, 12],
+            source_media_items=[
+                SourceMediaItemLink(
+                    media_item_id=50, media_index=1, role=AssetRoleEnum.INPUT
+                )
+            ],
+        )
+
+        _process_audio_in_background(
+            media_item_id=200,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        _, call_kwargs = mock_client.interactions.create.call_args
+        assert call_kwargs["input"] == [
+            {
+                "type": "text",
+                "text": "Ethereal soundtrack matching these visuals",
+            },
+            {
+                "type": "image",
+                "mime_type": "image/jpeg",
+                "uri": "gs://bucket/upload_11.jpg",
+            },
+            {
+                "type": "image",
+                "mime_type": "image/webp",
+                "uri": "gs://bucket/system_12.webp",
+            },
+            {
+                "type": "image",
+                "mime_type": "image/png",
+                "uri": "gs://bucket/gen_1.png",
+            },
+        ]
+
+        mock_media_repo.update.assert_called_with(
+            200,
+            {
+                "status": JobStatusEnum.COMPLETED,
+                "gcs_uris": ["gs://foo/lyria3_ref.mp3"],
+                "generation_time": pytest.approx(0, abs=10.0),
+                "mime_type": MimeTypeEnum.AUDIO_MPEG,
+                "source_assets": [
+                    {"asset_id": 11, "role": AssetRoleEnum.INPUT},
+                    {"asset_id": 12, "role": AssetRoleEnum.INPUT},
+                ],
+                "source_media_items": [
+                    {
+                        "media_item_id": 50,
+                        "media_index": 1,
+                        "role": AssetRoleEnum.INPUT,
+                    }
+                ],
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "asset_mock,media_mock,dto_kwargs,expected_error",
+        [
+            (
+                MagicMock(
+                    id=11,
+                    workspace_id=2,
+                    scope=AssetScopeEnum.PRIVATE,
+                    mime_type=MimeTypeEnum.IMAGE_PNG,
+                    gcs_uri="gs://bucket/other_ws.png",
+                ),
+                None,
+                {"source_asset_ids": [11]},
+                "Source asset 11 was not found in this workspace.",
+            ),
+            (
+                MagicMock(
+                    id=11,
+                    workspace_id=1,
+                    scope=AssetScopeEnum.PRIVATE,
+                    mime_type=MimeTypeEnum.VIDEO_MP4,
+                    gcs_uri="gs://bucket/clip.mp4",
+                ),
+                None,
+                {"source_asset_ids": [11]},
+                "Source asset 11 is not a valid image asset.",
+            ),
+            (
+                None,
+                MagicMock(
+                    id=50,
+                    workspace_id=2,
+                    mime_type=MimeTypeEnum.IMAGE_PNG,
+                    gcs_uris=["gs://bucket/img.png"],
+                ),
+                {
+                    "source_media_items": [
+                        SourceMediaItemLink(
+                            media_item_id=50,
+                            media_index=0,
+                            role=AssetRoleEnum.INPUT,
+                        )
+                    ]
+                },
+                "Media item 50 was not found in this workspace.",
+            ),
+            (
+                None,
+                MagicMock(
+                    id=50,
+                    workspace_id=1,
+                    mime_type=MimeTypeEnum.IMAGE_PNG,
+                    gcs_uris=["gs://bucket/img.png"],
+                ),
+                {
+                    "source_media_items": [
+                        SourceMediaItemLink(
+                            media_item_id=50,
+                            media_index=3,
+                            role=AssetRoleEnum.INPUT,
+                        )
+                    ]
+                },
+                "Media item 50 index 3 is out of bounds.",
+            ),
+            (
+                None,
+                MagicMock(
+                    id=50,
+                    workspace_id=1,
+                    mime_type=MimeTypeEnum.AUDIO_MPEG,
+                    gcs_uris=["gs://bucket/song.mp3"],
+                ),
+                {
+                    "source_media_items": [
+                        SourceMediaItemLink(
+                            media_item_id=50,
+                            media_index=0,
+                            role=AssetRoleEnum.INPUT,
+                        )
+                    ]
+                },
+                "Media item 50 is not an image item.",
+            ),
+        ],
+    )
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.SourceAssetRepository")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria3_rejects_invalid_reference_inputs(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_media_repo_cls,
+        mock_asset_repo_cls,
+        mock_worker_db,
+        asset_mock,
+        media_mock,
+        dto_kwargs,
+        expected_error,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_media_repo = AsyncMock()
+        mock_media_repo.get_by_id.return_value = media_mock
+        mock_media_repo_cls.return_value = mock_media_repo
+
+        mock_asset_repo = AsyncMock()
+        mock_asset_repo.get_by_id.return_value = asset_mock
+        mock_asset_repo_cls.return_value = mock_asset_repo
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Ambient track",
+            model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+            sample_count=1,
+            **dto_kwargs,
+        )
+
+        _process_audio_in_background(
+            media_item_id=201,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_genai_setup.get_omni_client.assert_not_called()
+        mock_gcs.return_value.store_to_gcs.assert_not_called()
+        mock_media_repo.update.assert_called_with(
+            201,
+            {
+                "status": JobStatusEnum.FAILED,
+                "error_message": expected_error,
+            },
+        )
+
+
+class TestLyria3LyricsAndStructure:
+
+    def test_extract_text_returns_none_for_bare_mock_or_audio_only(self):
+        bare_mock = MagicMock(
+            id="inter_bare",
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mp3", data="SGVsbG8="
+            ),
+        )
+        assert _extract_lyria3_text(bare_mock) is None
+        assert (
+            _extract_lyria3_text(
+                {"outputs": [{"type": "audio", "data": "SGVsbG8="}]}
+            )
+            is None
+        )
+
+    def test_extract_text_from_output_text_with_bracket_tags(self):
+        lyrics = "[Verse 1]\nNeon lights on wet asphalt\n\n[Chorus]\nRun into the night"
+        interaction = MagicMock(steps=None, outputs=None, output_text=lyrics)
+        result = _extract_lyria3_text(interaction)
+        assert result == {"raw_text": lyrics, "lyrics": lyrics}
+        assert "structure" not in result
+
+    def test_extract_text_parses_plain_lyria3_caption_bpm_and_mosic_into_structure(
+        self,
+    ):
+        raw = (
+            "[0.0:5.3] Darkness descends on a world torn asunder\n"
+            "[5.3:10.6] THE SKY BREAKS APART WITH A CATACLYSMIC THUNDER\n\n"
+            "Caption: Maximalist Symphonic Metal built to evoke an ocean storm.\n"
+            "Driving double-kick drums and soaring strings.\n"
+            "Mosic: 4.5\n"
+            "BPM: 90.0"
+        )
+        interaction = MagicMock(steps=None, outputs=None, output_text=raw)
+        result = _extract_lyria3_text(interaction)
+        assert result == {
+            "raw_text": raw,
+            "lyrics": (
+                "[0.0:5.3] Darkness descends on a world torn asunder\n"
+                "[5.3:10.6] THE SKY BREAKS APART WITH A CATACLYSMIC THUNDER"
+            ),
+            "structure": {
+                "caption": (
+                    "Maximalist Symphonic Metal built to evoke an ocean storm. "
+                    "Driving double-kick drums and soaring strings."
+                ),
+                "mosic": 4.5,
+                "bpm": 90,
+            },
+        }
+
+    def test_extract_text_instrumental_plain_block_sets_structure_without_lyrics(
+        self,
+    ):
+        raw = (
+            "Caption: Warm lo-fi hip-hop instrumental with Rhodes chords.\n"
+            "Mosic: 4.5\n"
+            "BPM: 84.5"
+        )
+        interaction = MagicMock(steps=None, outputs=None, output_text=raw)
+        result = _extract_lyria3_text(interaction)
+        assert result == {
+            "raw_text": raw,
+            "structure": {
+                "caption": "Warm lo-fi hip-hop instrumental with Rhodes chords.",
+                "mosic": 4.5,
+                "bpm": 84.5,
+            },
+        }
+        assert "lyrics" not in result
+
+    def test_extract_text_from_steps_ignores_user_input_and_parses_structure(
+        self,
+    ):
+        structure_obj = {
+            "tempo": "122 BPM",
+            "key": "A minor",
+            "sections": [
+                {"name": "Intro", "duration": "0:00-0:08"},
+                {"name": "Chorus", "duration": "0:08-0:30"},
+            ],
+        }
+        user_step = MagicMock(
+            type="user_input",
+            content=[MagicMock(type="text", text="User prompt text")],
+        )
+        model_step = MagicMock(
+            type="model_output",
+            content=[
+                MagicMock(type="text", text=json.dumps(structure_obj)),
+                MagicMock(
+                    type="text",
+                    text="[Chorus]\nElectric dreams tonight",
+                ),
+                MagicMock(type="audio", data=b"\x00\x01"),
+            ],
+        )
+        interaction = MagicMock(
+            steps=[user_step, model_step],
+            outputs=None,
+            output_text="ignored fallback",
+        )
+        result = _extract_lyria3_text(interaction)
+        assert result is not None
+        assert result["structure"] == structure_obj
+        assert result["lyrics"] == "[Chorus]\nElectric dreams tonight"
+        assert "User prompt text" not in result["raw_text"]
+
+    def test_extract_text_from_rest_outputs_extracts_section_lyrics(self):
+        payload = {
+            "bpm": 110,
+            "sections": [
+                {"name": "Verse 1", "lyrics": "Walking by the sea"},
+                {"name": "Chorus", "lyrics": "Golden horizon"},
+            ],
+        }
+        interaction = {
+            "outputs": [
+                {"type": "text", "text": json.dumps(payload)},
+                {"type": "audio", "mime_type": "audio/mpeg", "data": "SGk="},
+            ]
+        }
+        result = _extract_lyria3_text(interaction)
+        assert result is not None
+        assert result["structure"] == payload
+        assert (
+            result["lyrics"]
+            == "[Verse 1]\nWalking by the sea\n\n[Chorus]\nGolden horizon"
+        )
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GenAIModelSetup")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria3_persists_aligned_multi_sample_audio_analysis(
+        self,
+        mock_gcs,
+        mock_genai_setup,
+        mock_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_factory.return_value.__aenter__.return_value = AsyncMock()
+
+        mock_repo = AsyncMock()
+        mock_repo_cls.return_value = mock_repo
+
+        mock_gcs_singleton = MagicMock()
+        mock_gcs_singleton.store_to_gcs.side_effect = [
+            "gs://bucket/track_0.mp3",
+            "gs://bucket/track_2.mp3",
+        ]
+        mock_gcs.return_value = mock_gcs_singleton
+
+        inter_0 = MagicMock(
+            id="i0",
+            steps=None,
+            outputs=None,
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mp3", data="SGVsbG8="
+            ),
+            output_text="[Verse]\nTrack zero lyrics",
+        )
+        # Sample 1 fails to return audio -> omitted from both gcs_uris and tracks.
+        inter_1 = MagicMock(
+            id="i1",
+            steps=None,
+            outputs=None,
+            output_audio=None,
+            output_text="Orphaned text",
+        )
+        # Sample 2 succeeds with audio only (no text) -> tracks[1] is None.
+        inter_2 = MagicMock(
+            id="i2",
+            steps=None,
+            outputs=None,
+            output_audio=MagicMock(
+                type="audio", mime_type="audio/mp3", data="V29ybGQ="
+            ),
+            output_text=None,
+        )
+
+        mock_client = MagicMock()
+        mock_client.interactions.create.side_effect = [
+            inter_0,
+            inter_1,
+            inter_2,
+        ]
+        mock_genai_setup.get_omni_client.return_value = mock_client
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Indie pop anthem",
+            model=GenerationModelEnum.LYRIA_3_PRO_PREVIEW,
+            sample_count=3,
+        )
+
+        _process_audio_in_background(
+            media_item_id=305,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_repo.update.assert_called_with(
+            305,
+            {
+                "status": JobStatusEnum.COMPLETED,
+                "gcs_uris": [
+                    "gs://bucket/track_0.mp3",
+                    "gs://bucket/track_2.mp3",
+                ],
+                "generation_time": pytest.approx(0, abs=10.0),
+                "mime_type": MimeTypeEnum.AUDIO_MPEG,
+                "audio_analysis": {
+                    "tracks": [
+                        {
+                            "raw_text": "[Verse]\nTrack zero lyrics",
+                            "lyrics": "[Verse]\nTrack zero lyrics",
+                        },
+                        None,
+                    ]
+                },
+            },
+        )
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GeminiService")
+    @patch("src.audios.audio_service.aiplatform.gapic.PredictionServiceClient")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_lyria_enhances_prompt_when_requested(
+        self,
+        mock_gcs,
+        mock_aiplatform,
+        mock_gemini_cls,
+        mock_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_session = AsyncMock()
+        mock_db_factory.return_value.__aenter__.return_value = mock_db_session
+
+        mock_repo = AsyncMock()
+        mock_repo_cls.return_value = mock_repo
+
+        mock_gemini = MagicMock()
+        mock_gemini.enhance_prompt_from_dto = AsyncMock(
+            return_value="Enhanced warm acoustic guitar melody at 95 BPM."
+        )
+        mock_gemini.generate_media_metadata.return_value = {}
+        mock_gemini_cls.return_value = mock_gemini
+
+        mock_gcs_singleton = MagicMock()
+        mock_gcs_singleton.store_to_gcs.return_value = "gs://foo/enhanced.wav"
+        mock_gcs.return_value = mock_gcs_singleton
+
+        mock_ai_instance = MagicMock()
+        mock_ai_instance.predict.return_value = MagicMock(
+            predictions=[{"bytesBase64Encoded": "SGVsbG8="}]
+        )
+        mock_aiplatform.return_value = mock_ai_instance
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="acoustic guitar",
+            model=GenerationModelEnum.LYRIA_002,
+            seed=0,
+            enhance_prompt=True,
+        )
+
+        _process_audio_in_background(
+            media_item_id=401,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_gemini.enhance_prompt_from_dto.assert_called_once()
+        predict_instances = mock_ai_instance.predict.call_args.kwargs[
+            "instances"
+        ]
+        assert (
+            predict_instances[0].struct_value.fields["seed"].number_value == 0
+        )
+        mock_repo.update.assert_called_with(
+            401,
+            {
+                "status": JobStatusEnum.COMPLETED,
+                "gcs_uris": ["gs://foo/enhanced.wav"],
+                "generation_time": pytest.approx(0, abs=10.0),
+                "prompt": "Enhanced warm acoustic guitar melody at 95 BPM.",
+            },
+        )
+
+    @patch("src.database.WorkerDatabase")
+    @patch("src.audios.audio_service.MediaRepository")
+    @patch("src.audios.audio_service.GeminiService")
+    @patch("src.audios.audio_service.texttospeech.TextToSpeechClient")
+    @patch("src.audios.audio_service.GcsService")
+    def test_process_tts_ignores_enhance_prompt(
+        self,
+        mock_gcs,
+        mock_tts_client,
+        mock_gemini_cls,
+        mock_repo_cls,
+        mock_worker_db,
+        sample_user,
+    ):
+        mock_db_factory = MagicMock()
+        mock_worker_db.return_value.__aenter__.return_value = mock_db_factory
+        mock_db_session = AsyncMock()
+        mock_db_factory.return_value.__aenter__.return_value = mock_db_session
+
+        mock_repo = AsyncMock()
+        mock_repo_cls.return_value = mock_repo
+
+        mock_gemini = MagicMock()
+        mock_gemini.enhance_prompt_from_dto = AsyncMock()
+        mock_gemini.generate_media_metadata.return_value = {}
+        mock_gemini_cls.return_value = mock_gemini
+
+        mock_gcs_singleton = MagicMock()
+        mock_gcs_singleton.store_to_gcs.return_value = "gs://foo/tts.wav"
+        mock_gcs.return_value = mock_gcs_singleton
+
+        mock_tts_instance = MagicMock()
+        mock_tts_instance.synthesize_speech.return_value = MagicMock(
+            audio_content=b"123"
+        )
+        mock_tts_client.return_value = mock_tts_instance
+
+        dto = CreateAudioDto(
+            workspace_id=1,
+            prompt="Exact script to read aloud",
+            model=GenerationModelEnum.CHIRP_3,
+            language_code=LanguageEnum.EN_US,
+            voice_name=VoiceEnum.PUCK,
+            enhance_prompt=True,
+        )
+
+        _process_audio_in_background(
+            media_item_id=402,
+            request_dto=dto,
+            user_email=sample_user.email,
+            user_id=sample_user.id,
+        )
+
+        mock_gemini.enhance_prompt_from_dto.assert_not_called()
+        mock_repo.update.assert_called_with(
+            402,
+            {
+                "status": JobStatusEnum.COMPLETED,
+                "gcs_uris": ["gs://foo/tts.wav"],
+                "generation_time": pytest.approx(0, abs=10.0),
+            },
+        )

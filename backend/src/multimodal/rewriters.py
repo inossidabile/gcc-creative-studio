@@ -31,7 +31,9 @@ After the main prompt, on separate lines, provide the following Technical Parame
 
 RANDOM_VIDEO_PROMPT_TEMPLATE = """Generate a single, random, creative, and visually descriptive prompt suitable for an AI Video generator. The prompt should describe a complete, short scene with a clear beginning, middle, and end. Include specific details about the subject and the sequence of actions, the environment and lighting, and the overall visual aesthetic. Crucially, describe the camera work, including movements (e.g., 'slow dolly-in', 'sweeping crane shot') and angles. Finally, suggest the sound design or key audio elements."""
 
-RANDOM_AUDIO_PROMPT_TEMPLATE = """ """
+RANDOM_AUDIO_PROMPT_TEMPLATE = """Generate a single, creative, and musically rich prompt (2 to 4 sentences) suitable for an AI music generator. Describe the musical genre and subgenre, lead and backing instruments, tempo (BPM) and rhythmic groove, harmonic mood, dynamic progression, and production or mix texture (e.g., 'warm analog tape saturation', 'crisp modern studio mix'). Keep the track instrumental unless specifying vocal harmonies. Do NOT reference real artists, bands, or copyrighted song titles, and avoid visual camera directions or non-musical sound effects.
+
+IMPORTANT!!: JUST RETURN THE PROMPT DIRECTLY, YOU DON'T NEED TO CLARIFY THAT."""
 
 
 # Rewrite Text Prompt Templates
@@ -64,7 +66,12 @@ The User Prompt to rewrite:
 '{}'
 """
 
-REWRITE_AUDIO_TEXT_PROMPT_TEMPLATE = """ """
+REWRITE_AUDIO_TEXT_PROMPT_TEMPLATE = """Please rewrite and enrich the following prompt so it is ideal for an AI music generator. Expand it into a clear, cohesive 2 to 4 sentence musical brief that preserves the user's core intent while specifying the musical genre/style, lead and accompaniment instruments, tempo (BPM) and rhythmic feel, mood/atmosphere, arrangement dynamics, and studio production quality. Keep the piece instrumental unless the user explicitly asks for vocals or lyrics. Do NOT mention real artist names, bands, or copyrighted songs, and avoid visual scenes, camera directions, or non-musical sound effects.
+
+IMPORTANT!!: JUST RETURN THE REWRITTEN PROMPT DIRECTLY, YOU DON'T NEED TO CLARIFY THAT.
+
+The User Prompt to rewrite:
+"""
 
 
 # Rewrite JSON Prompt Templates

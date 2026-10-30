@@ -18,8 +18,11 @@ import {ComponentFixture, TestBed} from '@angular/core/testing';
 import {provideRouter} from '@angular/router';
 import {provideHttpClient} from '@angular/common/http';
 import {provideHttpClientTesting} from '@angular/common/http/testing';
+import {Clipboard} from '@angular/cdk/clipboard';
 import {MatDialogModule} from '@angular/material/dialog';
+import {MatMenuModule} from '@angular/material/menu';
 import {MatSnackBarModule} from '@angular/material/snack-bar';
+import {MatTooltipModule} from '@angular/material/tooltip';
 import {NoopAnimationsModule} from '@angular/platform-browser/animations';
 import {CUSTOM_ELEMENTS_SCHEMA} from '@angular/core';
 
@@ -36,7 +39,13 @@ describe('MediaLightboxComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       declarations: [MediaLightboxComponent],
-      imports: [MatDialogModule, MatSnackBarModule, NoopAnimationsModule],
+      imports: [
+        MatDialogModule,
+        MatMenuModule,
+        MatSnackBarModule,
+        MatTooltipModule,
+        NoopAnimationsModule,
+      ],
       providers: [
         provideRouter([]),
         provideHttpClient(),
@@ -112,6 +121,154 @@ describe('MediaLightboxComponent', () => {
       component['executeMove'](1, 2, 'Same');
       expect(moveSpy).not.toHaveBeenCalled();
       expect(emitted).toEqual([]);
+    });
+  });
+
+  describe('audio lyrics & song structure', () => {
+    beforeEach(() => {
+      component.mediaItem = {
+        id: 44,
+        workspaceId: 1,
+        mimeType: 'audio/mpeg',
+        prompt: 'Synthwave anthem',
+        presignedUrls: [
+          'https://example.com/a.mp3',
+          'https://example.com/b.mp3',
+        ],
+        audioAnalysis: {
+          tracks: [
+            {
+              raw_text: '[Verse 1]\nNeon skyline',
+              lyrics: '[Verse 1]\nNeon skyline',
+              structure: {
+                tempo: '124 BPM',
+                sections: [{name: 'Verse 1', duration: '0:00-0:15'}],
+              },
+            },
+            null,
+          ],
+        },
+      } as any;
+      component.selectedIndex = 0;
+      fixture.detectChanges();
+    });
+
+    it('displays lyrics and structure for the selected track and updates on track switch', () => {
+      expect(component.hasCurrentTrackText).toBeTrue();
+      expect(component.currentTrackLyrics).toBe('[Verse 1]\nNeon skyline');
+      expect(component.currentTrackStructureEntries).toEqual([
+        {label: 'Tempo', value: '124 BPM'},
+        {label: 'Verse 1', value: '0:00-0:15'},
+      ]);
+
+      const host = fixture.nativeElement as HTMLElement;
+      expect(host.querySelector('.audio-lyrics-panel')?.textContent).toContain(
+        'Neon skyline',
+      );
+
+      component.selectedIndex = 1;
+      fixture.detectChanges();
+      expect(component.hasCurrentTrackText).toBeFalse();
+      expect(host.querySelector('.audio-lyrics-panel')).toBeNull();
+    });
+
+    it('copies formatted structure and lyrics to the clipboard', () => {
+      const clipboard = TestBed.inject(Clipboard);
+      const copySpy = spyOn(clipboard, 'copy');
+
+      component.copyCurrentTrackText();
+
+      expect(copySpy).toHaveBeenCalledWith(
+        'Tempo: 124 BPM\nVerse 1: 0:00-0:15\n\n[Verse 1]\nNeon skyline',
+      );
+    });
+
+    it('renders Use in Video Omni action for audio clips when showOmni is true and emits selected track', () => {
+      const emitted: Array<{mediaItem: any; selectedIndex: number}> = [];
+      component.editWithOmniClicked.subscribe(evt => emitted.push(evt));
+
+      component.selectedIndex = 1;
+      fixture.detectChanges();
+
+      const host = fixture.nativeElement as HTMLElement;
+      const omniButton = Array.from(
+        host.querySelectorAll('studio-button'),
+      ).find(btn => btn.textContent?.includes('Use in Video')) as
+        | HTMLElement
+        | undefined;
+      expect(omniButton).toBeDefined();
+
+      omniButton!.click();
+      expect(emitted).toEqual([
+        {mediaItem: component.mediaItem, selectedIndex: 1},
+      ]);
+
+      component.showOmni = false;
+      fixture.detectChanges();
+      const hiddenOmni = Array.from(
+        host.querySelectorAll('studio-button'),
+      ).find(btn => btn.textContent?.includes('Use in Video'));
+      expect(hiddenOmni).toBeUndefined();
+    });
+
+    it('renders backend-parsed Caption, Mosic and BPM separately from timestamped lyrics', () => {
+      component.mediaItem = {
+        id: 45,
+        workspaceId: 1,
+        mimeType: 'audio/mpeg',
+        prompt: 'Stormy symphonic metal',
+        presignedUrls: ['https://example.com/storm.mp3'],
+        audioAnalysis: {
+          tracks: [
+            {
+              raw_text:
+                '[0.0:5.3] Darkness descends\n\nCaption: Maximalist Symphonic Metal wall of sound.\nMosic: 4.5\nBPM: 90.0',
+              lyrics: '[0.0:5.3] Darkness descends',
+              structure: {
+                caption: 'Maximalist Symphonic Metal wall of sound.',
+                mosic: 4.5,
+                bpm: 90,
+              },
+            },
+          ],
+        },
+      } as any;
+      component.selectedIndex = 0;
+      fixture.detectChanges();
+
+      expect(component.currentTrackLyrics).toBe('[0.0:5.3] Darkness descends');
+      expect(component.currentTrackCaption).toBe(
+        'Maximalist Symphonic Metal wall of sound.',
+      );
+      expect(component.currentTrackStructureEntries).toEqual([
+        {label: 'Mosic', value: '4.5'},
+        {label: 'BPM', value: '90'},
+      ]);
+
+      const host = fixture.nativeElement as HTMLElement;
+      expect(host.querySelector('.lyrics-text')?.textContent).toBe(
+        '[0.0:5.3] Darkness descends',
+      );
+      expect(host.querySelector('.structure-caption')?.textContent).toContain(
+        'Maximalist Symphonic Metal wall of sound.',
+      );
+    });
+
+    it('shows raw_text verbatim instead of parsing it when the backend sent no lyrics or structure', () => {
+      const rawText = '[0.0:5.3] Darkness descends\n\nBPM: 90.0';
+      component.mediaItem = {
+        id: 46,
+        workspaceId: 1,
+        mimeType: 'audio/mpeg',
+        presignedUrls: ['https://example.com/raw.mp3'],
+        audioAnalysis: {tracks: [{raw_text: rawText}]},
+      } as any;
+      component.selectedIndex = 0;
+      fixture.detectChanges();
+
+      expect(component.currentTrackLyrics).toBe(rawText);
+      expect(component.currentTrackStructureEntries).toEqual([]);
+      expect(component.currentTrackCaption).toBeNull();
     });
   });
 });

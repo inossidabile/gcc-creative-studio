@@ -852,3 +852,41 @@ def test_l1_gives_up_after_three_attempts(gemini_service, method_name, invoke):
 
     assert generate_content.call_count == 3
     assert sleep.call_count == 2
+
+
+def test_generate_random_and_rewrite_audio_prompt(gemini_service):
+    mock_response = MagicMock()
+    mock_response.text = "Warm lo-fi hip-hop beat at 82 BPM with Rhodes piano."
+    gemini_service.client.models.generate_content.return_value = mock_response
+
+    random_res = gemini_service.generate_random_or_rewrite_prompt(
+        PromptTargetEnum.AUDIO
+    )
+    assert random_res == mock_response.text
+
+    rewrite_res = gemini_service.generate_random_or_rewrite_prompt(
+        PromptTargetEnum.AUDIO, original_prompt="lofi"
+    )
+    assert rewrite_res == mock_response.text
+    assert gemini_service.client.models.generate_content.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_enhance_prompt_from_audio_dto(gemini_service):
+    from src.audios.dto.create_audio_dto import CreateAudioDto
+    from src.common.base_dto import GenerationModelEnum
+
+    dto = CreateAudioDto(
+        workspace_id=1,
+        prompt="jazz",
+        model=GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+        enhance_prompt=True,
+    )
+    mock_response = MagicMock()
+    mock_response.text = "Upbeat acoustic jazz trio at 128 BPM with upright bass and brushed drums."
+    gemini_service.client.models.generate_content.return_value = mock_response
+
+    res = await gemini_service.enhance_prompt_from_dto(
+        dto, PromptTargetEnum.AUDIO
+    )
+    assert res == mock_response.text

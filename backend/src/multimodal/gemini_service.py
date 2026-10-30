@@ -41,12 +41,15 @@ from src.brand_guidelines.schema.brand_guideline_model import (
 )
 from src.common.retry import is_transient_or_quota
 from src.config.config_service import config_service
+from src.audios.dto.create_audio_dto import CreateAudioDto
 from src.images.dto.create_imagen_dto import CreateImagenDto
 from src.multimodal.dto.create_prompt_imagen_dto import CreatePromptImageDto
 from src.multimodal.dto.create_prompt_video_dto import CreatePromptVideoDto
 from src.multimodal.rewriters import (
+    RANDOM_AUDIO_PROMPT_TEMPLATE,
     RANDOM_IMAGE_PROMPT_TEMPLATE,
     RANDOM_VIDEO_PROMPT_TEMPLATE,
+    REWRITE_AUDIO_TEXT_PROMPT_TEMPLATE,
     REWRITE_IMAGE_JSON_PROMPT_TEMPLATE,
     REWRITE_IMAGE_TEXT_PROMPT_TEMPLATE,
     REWRITE_VIDEO_JSON_PROMPT_TEMPLATE,
@@ -130,13 +133,13 @@ class GeminiService:
 
         """
         full_prompt = f"{prompt_template} {original_prompt}"
-        response_schema = response_schema or self._get_response_schema(
-            target_type
-        )
 
         try:
             response = None
             if response_mime_type.value == ResponseMimeTypeEnum.JSON.value:
+                response_schema = response_schema or self._get_response_schema(
+                    target_type
+                )
                 response = self.client.models.generate_content(
                     model=self.rewriter_model,
                     contents=full_prompt,
@@ -172,20 +175,20 @@ class GeminiService:
     ) -> str:
         """Generates a completely new, random, and creative text prompt."""
         try:
-            prompt_template = RANDOM_IMAGE_PROMPT_TEMPLATE
-
             if not original_prompt:
-                prompt_template = (
-                    RANDOM_IMAGE_PROMPT_TEMPLATE
-                    if target_type.value == PromptTargetEnum.IMAGE
-                    else RANDOM_VIDEO_PROMPT_TEMPLATE
-                )
+                if target_type == PromptTargetEnum.IMAGE:
+                    prompt_template = RANDOM_IMAGE_PROMPT_TEMPLATE
+                elif target_type == PromptTargetEnum.AUDIO:
+                    prompt_template = RANDOM_AUDIO_PROMPT_TEMPLATE
+                else:
+                    prompt_template = RANDOM_VIDEO_PROMPT_TEMPLATE
             else:
-                prompt_template = (
-                    REWRITE_IMAGE_TEXT_PROMPT_TEMPLATE
-                    if target_type.value == PromptTargetEnum.IMAGE
-                    else REWRITE_VIDEO_TEXT_PROMPT_TEMPLATE
-                )
+                if target_type == PromptTargetEnum.IMAGE:
+                    prompt_template = REWRITE_IMAGE_TEXT_PROMPT_TEMPLATE
+                elif target_type == PromptTargetEnum.AUDIO:
+                    prompt_template = REWRITE_AUDIO_TEXT_PROMPT_TEMPLATE
+                else:
+                    prompt_template = REWRITE_VIDEO_TEXT_PROMPT_TEMPLATE
             response = self.generate_structured_prompt(
                 original_prompt=original_prompt,
                 target_type=target_type,
@@ -233,7 +236,7 @@ class GeminiService:
 
     async def enhance_prompt_from_dto(
         self,
-        dto: CreateImagenDto | CreateVeoDto,
+        dto: CreateImagenDto | CreateVeoDto | CreateAudioDto,
         target_type: PromptTargetEnum,
         response_mime_type: ResponseMimeTypeEnum = ResponseMimeTypeEnum.JSON,
     ) -> str:
@@ -243,15 +246,25 @@ class GeminiService:
         This single method replaces the four repetitive `rewrite_for_*` methods.
 
         Args:
-            dto: The input DTO, which can be for an image or video.
-            target_type: The target output type (IMAGE or VIDEO).
+            dto: The input DTO, which can be for an image, video, or audio.
+            target_type: The target output type (IMAGE, VIDEO, or AUDIO).
 
         Returns:
-            A dictionary containing the prompt data from Gemini.
+            A dictionary or text prompt string from Gemini.
 
         """
+        if target_type == PromptTargetEnum.AUDIO:
+            return self.generate_structured_prompt(
+                original_prompt=dto.prompt,
+                target_type=PromptTargetEnum.AUDIO,
+                prompt_template=REWRITE_AUDIO_TEXT_PROMPT_TEMPLATE,
+                response_mime_type=ResponseMimeTypeEnum.TEXT,
+            )
+
         if target_type not in [PromptTargetEnum.IMAGE, PromptTargetEnum.VIDEO]:
-            raise ValueError("Invalid target_type. Must be IMAGE or VIDEO.")
+            raise ValueError(
+                "Invalid target_type. Must be IMAGE, VIDEO, or AUDIO."
+            )
 
         # --- Prompt Enhancement for Gemini Image-to-Image ---
         # This logic is placed here to ensure that any call to enhance a prompt

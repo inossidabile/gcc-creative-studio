@@ -26,14 +26,14 @@ class RewritePromptRequestDto(BaseDto):
     target_type: Annotated[
         PromptTargetEnum,
         Field(
-            description="The target media type to tailor the prompt for (e.g., 'image' or 'video').",
+            description="The target media type to tailor the prompt for (e.g., 'image', 'video', or 'audio').",
         ),
     ]
     user_prompt: Annotated[
         str,
         Field(
             description="The simple, user-provided prompt to be rewritten and enhanced.",
-            min_length=5,
+            min_length=2,
         ),
     ]
 

@@ -74,6 +74,32 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
     icon?: string;
   }[] = [];
   @Input() modes: {value: string; icon: string; label: string}[] = [];
+  @Input() showRewrite = true;
+  @Input() canEditReferenceImages = true;
+
+  private placeholderSignal = signal<string>('');
+  @Input() set placeholder(val: string) {
+    this.placeholderSignal.set(val || '');
+  }
+  get placeholder(): string {
+    return this.placeholderSignal();
+  }
+
+  private showAspectRatioSignal = signal<boolean>(true);
+  @Input() set showAspectRatio(val: boolean) {
+    this.showAspectRatioSignal.set(val);
+  }
+  get showAspectRatio(): boolean {
+    return this.showAspectRatioSignal();
+  }
+
+  private allowReferenceImagesSignal = signal<boolean>(false);
+  @Input() set allowReferenceImages(val: boolean) {
+    this.allowReferenceImagesSignal.set(val);
+  }
+  get allowReferenceImages(): boolean {
+    return this.allowReferenceImagesSignal();
+  }
 
   // --- setter inputs ---
   private _generationModels: GenerationModelConfig[] = [];
@@ -180,6 +206,11 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
 
   @HostListener('document:click', ['$event'])
   clickout(event: any) {
+    const targetEl = event?.target as HTMLElement | null;
+    if (targetEl?.closest?.('.cdk-overlay-container')) {
+      return;
+    }
+
     // Close Mode Menu if clicked outside trigger and menu
     if (
       this.isModeMenuOpen() &&
@@ -237,9 +268,53 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   isTextToVideo = computed(() => this.selectedMode() === 'Text to Video');
   isVideoToImage = computed(() => this.selectedMode() === 'Video to Image');
   isImageMode = computed(() => this.selectedMode().includes('Image'));
+  isAudioMode = computed(() => {
+    const modeLower = this.selectedMode().toLowerCase();
+    return (
+      modeLower.includes('audio') ||
+      modeLower.includes('music') ||
+      modeLower.includes('speech')
+    );
+  });
+  effectivePlaceholder = computed(() => {
+    if (this.placeholderSignal()) {
+      return this.placeholderSignal();
+    }
+    if (this.isConcatenateVideo()) {
+      return 'Prompt not needed for concatenation';
+    }
+    if (this.isImageMode()) {
+      return 'Generate an image with text...';
+    }
+    if (this.isAudioMode()) {
+      return 'Describe the audio to generate...';
+    }
+    return 'Generate a video with text...';
+  });
   canEditImgSlot = computed(
     () => !this.isExtendVideo() && !this.isConcatenateVideo(),
   );
+  hasAspectRatioOptions = computed(() => {
+    if (!this.showAspectRatioSignal()) {
+      return false;
+    }
+    const model = this.getSelectedModelObject();
+    if (model) {
+      return (model.capabilities?.supportedAspectRatios ?? []).length > 0;
+    }
+    return true;
+  });
+  canShowReferenceImages = computed(() => {
+    const model = this.getSelectedModelObject();
+    if (!model || (model.capabilities?.maxReferenceImages ?? 0) <= 0) {
+      return false;
+    }
+    return (
+      this.isIngredientsToVideo() ||
+      this.isIngredientsToImage() ||
+      this.allowReferenceImagesSignal()
+    );
+  });
   hasResolutionOptions = computed(() => this.supportedResolutions().length > 0);
   hasDurationOptions = computed(
     () =>

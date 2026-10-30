@@ -14,15 +14,23 @@
  * limitations under the License.
  */
 
-import {Component, OnDestroy} from '@angular/core';
+import {Component, OnDestroy, inject} from '@angular/core';
+import {Clipboard} from '@angular/cdk/clipboard';
 import {MatSnackBar} from '@angular/material/snack-bar';
 import {MatDialog} from '@angular/material/dialog';
 import {DomSanitizer, SafeHtml} from '@angular/platform-browser';
 import {ActivatedRoute, NavigationExtras, Router} from '@angular/router';
 import {first, Subscription} from 'rxjs';
 import {
+  AudioTrackAnalysis,
   EnrichedSourceAsset,
   MediaItem,
+  SongStructureEntry,
+  formatSongStructureEntries,
+  formatTrackAnalysisForCopy,
+  getAudioTrackAnalysis,
+  getAudioTrackCaption,
+  getAudioTrackLyrics,
 } from '../../common/models/media-item.model';
 import {GalleryItem} from '../../common/models/gallery-item.model';
 import {CreatePromptMediaDto} from '../../common/models/prompt.model';
@@ -211,6 +219,43 @@ export class MediaDetailComponent implements OnDestroy {
 
   get isYoutubeVideo(): boolean {
     return (this.mediaItem as any)?.metadata?.assetType === 'youtube_video';
+  }
+
+  private clipboard = inject(Clipboard, {optional: true});
+
+  get currentTrackAnalysis(): AudioTrackAnalysis | null {
+    return getAudioTrackAnalysis(this.mediaItem, this.currentImageIndex);
+  }
+
+  get currentTrackLyrics(): string | null {
+    return getAudioTrackLyrics(this.currentTrackAnalysis);
+  }
+
+  get currentTrackCaption(): string | null {
+    return getAudioTrackCaption(this.currentTrackAnalysis);
+  }
+
+  get currentTrackStructureEntries(): SongStructureEntry[] {
+    return formatSongStructureEntries(this.currentTrackAnalysis);
+  }
+
+  get hasCurrentTrackText(): boolean {
+    return (
+      Boolean(this.currentTrackLyrics) ||
+      Boolean(this.currentTrackCaption) ||
+      this.currentTrackStructureEntries.length > 0
+    );
+  }
+
+  copyCurrentTrackText(): void {
+    const text = formatTrackAnalysisForCopy(this.currentTrackAnalysis);
+    if (!text) return;
+    if (this.clipboard) {
+      this.clipboard.copy(text);
+    } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(text);
+    }
+    handleSuccessSnackbar(this._snackBar, 'Copied to clipboard!');
   }
 
   constructor(
@@ -514,7 +559,9 @@ export class MediaDetailComponent implements OnDestroy {
         type: this.mediaItem.itemType || 'media_item',
         index: index,
         name:
-          this.mediaItem.originalPrompt || `Audio Input ${this.mediaItem.id}`,
+          this.mediaItem.titles?.[index] ||
+          this.mediaItem.titles?.[0] ||
+          'Audio Reference',
       };
     } else {
       remixState.referenceVideo = {

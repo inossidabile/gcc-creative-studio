@@ -333,7 +333,8 @@ export class GalleryService implements OnDestroy {
       comment: item.comment || metadata.comment,
       critique: item.critique || metadata.critique,
       rawData: item.rawData || metadata.raw_data,
-      audioAnalysis: item.audioAnalysis || metadata.audio_analysis,
+      audioAnalysis:
+        item.audioAnalysis || item.audio_analysis || metadata.audio_analysis,
       errorMessage:
         item.errorMessage ||
         item.error_message ||

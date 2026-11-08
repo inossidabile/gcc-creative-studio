@@ -150,6 +150,26 @@ describe('AudioComponent', () => {
     fixture.detectChanges();
   });
 
+  const getFlowBox = (): FlowPromptBoxComponent =>
+    fixture.debugElement.query(By.directive(FlowPromptBoxComponent))
+      .componentInstance as FlowPromptBoxComponent;
+
+  const makeDropEvent = (file: File): DragEvent =>
+    ({
+      preventDefault: jasmine.createSpy('preventDefault'),
+      dataTransfer: {files: [file]},
+    }) as unknown as DragEvent;
+
+  const makeAudioJob = (overrides: Record<string, any> = {}): MediaItem =>
+    ({
+      id: 77,
+      status: JobStatus.COMPLETED,
+      mimeType: 'audio/mpeg',
+      prompt: 'Neon synthwave',
+      presignedUrls: ['https://signed/77.mp3'],
+      ...overrides,
+    }) as unknown as MediaItem;
+
   it('should create with Lyria 3 supporting up to 10 reference images', () => {
     expect(component).toBeTruthy();
     expect(component.lyriaModel).toBe('lyria-3-clip-preview');
@@ -157,11 +177,8 @@ describe('AudioComponent', () => {
   });
 
   it('should render FlowPromptBoxComponent with Rewrite enabled for Music and hidden for Text to Speech', () => {
-    const flowBoxDebug = fixture.debugElement.query(
-      By.directive(FlowPromptBoxComponent),
-    );
-    expect(flowBoxDebug).toBeTruthy();
-    const flowBox = flowBoxDebug.componentInstance as FlowPromptBoxComponent;
+    const flowBox = getFlowBox();
+    expect(flowBox).toBeTruthy();
     expect(flowBox.mode).toBe('Music');
     expect(flowBox.hasAspectRatioOptions()).toBeFalse();
     expect(flowBox.showRewrite).toBeTrue();
@@ -220,20 +237,18 @@ describe('AudioComponent', () => {
   it('should render Home/Video-style hero container and circular control-options buttons per mode without Seed FAB', () => {
     expect(fixture.debugElement.query(By.css('.home-margin'))).toBeTruthy();
     expect(fixture.debugElement.query(By.css('.video-container'))).toBeTruthy();
+    expect(
+      fixture.debugElement.queryAll(By.css('.control-options button[mat-fab]'))
+        .length,
+    ).toBe(1);
 
-    let fabButtons = fixture.debugElement.queryAll(
-      By.css('.control-options button[mat-fab]'),
-    );
-    expect(fabButtons.length).toBe(1);
-
-    component.addNegativePhrase({
-      value: 'vocals',
-      chipInput: {clear: jasmine.createSpy('clear')},
-    } as unknown as MatChipInputEvent);
-    component.addNegativePhrase({
-      value: 'drums',
-      chipInput: {clear: jasmine.createSpy('clear')},
-    } as unknown as MatChipInputEvent);
+    const chipEvent = (value: string) =>
+      ({
+        value,
+        chipInput: {clear: jasmine.createSpy('clear')},
+      }) as unknown as MatChipInputEvent;
+    component.addNegativePhrase(chipEvent('vocals'));
+    component.addNegativePhrase(chipEvent('drums'));
     expect(component.negativePrompt).toBe('vocals, drums');
 
     component.removeNegativePhrase('vocals');
@@ -244,28 +259,24 @@ describe('AudioComponent', () => {
     component.selectVoice(VoiceEnum.AOEDE);
     fixture.detectChanges();
 
-    fabButtons = fixture.debugElement.queryAll(
-      By.css('.control-options button[mat-fab]'),
-    );
-    expect(fabButtons.length).toBe(3);
+    expect(
+      fixture.debugElement.queryAll(By.css('.control-options button[mat-fab]'))
+        .length,
+    ).toBe(3);
     expect(component.selectedLanguageName()).toBe('French (France)');
     expect(component.selectedVoiceLabel()).toBe('Aoede');
   });
 
   it('should expose Seed inside FlowPromptBox settings only when Lyria 2 is selected', () => {
-    const flowBox = fixture.debugElement.query(
-      By.directive(FlowPromptBoxComponent),
-    ).componentInstance as FlowPromptBoxComponent;
-
-    flowBox.isSettingsMenuOpen.set(true);
+    getFlowBox().isSettingsMenuOpen.set(true);
     fixture.detectChanges();
     expect(fixture.debugElement.query(By.css('#lyria-seed-input'))).toBeNull();
 
     component.onLyriaModelChange('lyria-002');
     fixture.detectChanges();
-
-    const seedInput = fixture.debugElement.query(By.css('#lyria-seed-input'));
-    expect(seedInput).toBeTruthy();
+    expect(
+      fixture.debugElement.query(By.css('#lyria-seed-input')),
+    ).toBeTruthy();
 
     component.seed = 0;
     component.prompt = 'Deterministic beat';
@@ -274,10 +285,7 @@ describe('AudioComponent', () => {
 
     component.generate();
     expect(searchServiceSpy.startAudioGeneration).toHaveBeenCalledWith(
-      jasmine.objectContaining({
-        model: GenerationModelEnum.LYRIA_002,
-        seed: 0,
-      }),
+      jasmine.objectContaining({model: GenerationModelEnum.LYRIA_002, seed: 0}),
     );
 
     component.clearSeed();
@@ -323,9 +331,7 @@ describe('AudioComponent', () => {
     component.referenceImages = [
       {previewUrl: 'https://signed/a.png', sourceAssetId: 42},
     ];
-
     component.generate();
-
     expect(searchServiceSpy.startAudioGeneration).not.toHaveBeenCalled();
   });
 
@@ -377,18 +383,14 @@ describe('AudioComponent', () => {
 
     component.prompt = 'Read this script verbatim.';
     component.generate();
-
     expect(searchServiceSpy.startAudioGeneration).toHaveBeenCalledWith(
-      jasmine.objectContaining({
-        enhancePrompt: false,
-      }),
+      jasmine.objectContaining({enhancePrompt: false}),
     );
   });
 
   it('should rewrite music prompts via SearchService and restore original prompt on error', () => {
     component.selectedModel = 'lyria';
     component.prompt = 'upbeat jazz';
-
     component.rewritePrompt();
 
     expect(searchServiceSpy.rewritePrompt).toHaveBeenCalledWith({
@@ -398,7 +400,6 @@ describe('AudioComponent', () => {
     expect(component.prompt).toBe('Rewritten music prompt');
     expect(component.isLoading).toBeFalse();
 
-    // Restore original prompt if rewrite fails
     searchServiceSpy.rewritePrompt.and.returnValue(
       throwError(() => new Error('Gemini unavailable')),
     );
@@ -408,7 +409,6 @@ describe('AudioComponent', () => {
     expect(component.prompt).toBe('synthwave arpeggio');
     expect(component.isLoading).toBeFalse();
 
-    // Never rewrite in TTS mode
     searchServiceSpy.rewritePrompt.calls.reset();
     component.onModeChanged('Text to Speech');
     component.prompt = 'Literal spoken voiceover';
@@ -417,16 +417,8 @@ describe('AudioComponent', () => {
   });
 
   it('should confirm and delete the active generated audio job via GalleryService', () => {
-    activeAudioJobSubject.next({
-      id: 77,
-      status: JobStatus.COMPLETED,
-      mimeType: 'audio/mpeg',
-      prompt: 'Neon synthwave',
-      presignedUrls: ['https://signed/77.mp3'],
-    } as unknown as MediaItem);
-    dialogSpy.open.and.returnValue({
-      afterClosed: () => of(true),
-    } as any);
+    activeAudioJobSubject.next(makeAudioJob());
+    dialogSpy.open.and.returnValue({afterClosed: () => of(true)} as any);
 
     component.deleteGeneratedMedia();
 
@@ -444,14 +436,12 @@ describe('AudioComponent', () => {
   });
 
   it('should navigate to /video in Omni mode with referenceAudio and no parentMediaItemId when handleEditWithOmni is triggered', () => {
-    const audioItem = {
+    const audioItem = makeAudioJob({
       id: 88,
-      status: JobStatus.COMPLETED,
-      mimeType: 'audio/mpeg',
       originalPrompt: 'image!',
       prompt: 'Expanded orchestral prompt',
       presignedUrls: ['https://signed/88-0.mp3', 'https://signed/88-1.mp3'],
-    } as unknown as MediaItem;
+    });
 
     component.handleEditWithOmni({mediaItem: audioItem, selectedIndex: 1});
 
@@ -472,13 +462,13 @@ describe('AudioComponent', () => {
   });
 
   it('should keep completed audio lightbox mounted during rewritePrompt and ignore late response if switched to TTS', () => {
-    activeAudioJobSubject.next({
-      id: 91,
-      status: JobStatus.COMPLETED,
-      mimeType: 'audio/mpeg',
-      prompt: 'Completed track',
-      presignedUrls: ['https://signed/91.mp3'],
-    } as unknown as MediaItem);
+    activeAudioJobSubject.next(
+      makeAudioJob({
+        id: 91,
+        prompt: 'Completed track',
+        presignedUrls: ['https://signed/91.mp3'],
+      }),
+    );
     fixture.detectChanges();
     expect(
       fixture.debugElement.query(By.css('app-media-lightbox')),
@@ -501,7 +491,6 @@ describe('AudioComponent', () => {
       fixture.debugElement.query(By.css('app-media-lightbox')),
     ).toBeTruthy();
 
-    // User switches to Text to Speech before rewrite finishes
     component.onModeChanged('Text to Speech');
     component.prompt = 'Exact TTS script';
     rewriteSubject.next({prompt: 'Lush ambient synth pad at 80 BPM'});
@@ -527,21 +516,16 @@ describe('AudioComponent', () => {
       uploadSubject.asObservable(),
     );
 
-    const file = new File(['img'], 'cover.png', {type: 'image/png'});
-    const dropEvent = {
-      preventDefault: jasmine.createSpy('preventDefault'),
-      dataTransfer: {files: [file]},
-    } as unknown as DragEvent;
-
     component.selectedModel = 'lyria';
     component.prompt = 'Cinematic score';
-    component.onReferenceImageDrop(dropEvent);
+    component.onReferenceImageDrop(
+      makeDropEvent(new File(['img'], 'cover.png', {type: 'image/png'})),
+    );
 
     expect(component.uploadingReferenceCount).toBe(1);
     component.generate();
     expect(searchServiceSpy.startAudioGeneration).not.toHaveBeenCalled();
 
-    // Switch to TTS before upload finishes; late upload must not be added
     component.onModeChanged('Text to Speech');
     uploadSubject.next({
       id: 55,
@@ -552,5 +536,166 @@ describe('AudioComponent', () => {
 
     expect(component.uploadingReferenceCount).toBe(0);
     expect(component.referenceImages.length).toBe(0);
+  });
+
+  it('should select uploaded or gallery reference audio via openAudioSelectorForReference and send it in Lyria generate()', () => {
+    dialogSpy.open.and.returnValue({
+      afterClosed: () =>
+        of({
+          mediaItem: {
+            id: 210,
+            titles: ['Track Zero', 'Track One'],
+            prompt: 'Synth intro',
+          },
+          selectedIndex: 1,
+        }),
+    } as any);
+
+    component.openAudioSelectorForReference();
+    fixture.detectChanges();
+
+    expect(component.referenceAudio).toEqual({
+      id: 210,
+      type: 'media_item',
+      name: 'Track One',
+      index: 1,
+    });
+    expect(getFlowBox().placeholder).toBe(
+      'Describe how to evolve or build on this audio...',
+    );
+
+    component.prompt = 'Build into a high-energy chorus';
+    component.generate();
+
+    expect(searchServiceSpy.startAudioGeneration).toHaveBeenCalledWith(
+      jasmine.objectContaining({
+        model: GenerationModelEnum.LYRIA_3_CLIP_PREVIEW,
+        prompt: 'Build into a high-energy chorus',
+        referenceAudio: {id: 210, type: 'media_item', index: 1},
+      }),
+    );
+
+    component.onLyriaModelChange('lyria-002');
+    expect(component.referenceAudio?.id).toBe(210);
+
+    searchServiceSpy.startAudioGeneration.calls.reset();
+    component.onModeChanged('Text to Speech');
+    component.prompt = 'Read aloud';
+    component.generate();
+    expect(
+      searchServiceSpy.startAudioGeneration.calls.mostRecent().args[0]
+        .referenceAudio,
+    ).toBeUndefined();
+  });
+
+  it('should upload supported dropped audio files, reject unsupported audio/non-audio drops, and clear referenceAudio', () => {
+    const uploadSubject = new Subject<any>();
+    sourceAssetServiceSpy.uploadAsset.and.returnValue(
+      uploadSubject.asObservable(),
+    );
+
+    for (const badFile of [
+      new File(['txt'], 'notes.txt', {type: 'text/plain'}),
+      new File(['flac'], 'lossless.flac', {type: 'audio/flac'}),
+      new File(['m4a'], 'voice_memo.m4a', {type: ''}),
+    ]) {
+      component.onReferenceAudioDrop(makeDropEvent(badFile));
+    }
+    expect(sourceAssetServiceSpy.uploadAsset).not.toHaveBeenCalled();
+
+    component.prompt = 'Add live drums';
+    component.onReferenceAudioDrop(
+      makeDropEvent(new File(['mp3-bytes'], 'demo_riff.mp3', {type: ''})),
+    );
+
+    expect(sourceAssetServiceSpy.uploadAsset).toHaveBeenCalledTimes(1);
+    const uploadedFile = sourceAssetServiceSpy.uploadAsset.calls.mostRecent()
+      .args[0] as File;
+    expect(uploadedFile.type).toBe('audio/mpeg');
+    expect(component.uploadingReferenceCount).toBe(1);
+
+    component.generate();
+    expect(searchServiceSpy.startAudioGeneration).not.toHaveBeenCalled();
+
+    uploadSubject.next({
+      id: 305,
+      gcsUri: 'gs://bucket/demo_riff.mp3',
+      originalFilename: 'demo_riff.mp3',
+    });
+    uploadSubject.complete();
+
+    expect(component.uploadingReferenceCount).toBe(0);
+    expect(component.referenceAudio).toEqual({
+      id: 305,
+      type: 'source_asset',
+      name: 'demo_riff.mp3',
+      index: 0,
+    });
+
+    const stopSpy = jasmine.createSpy('stopPropagation');
+    component.clearReferenceAudio({
+      stopPropagation: stopSpy,
+    } as unknown as Event);
+    expect(stopSpy).toHaveBeenCalled();
+    expect(component.referenceAudio).toBeNull();
+  });
+
+  it('should attach selected take as referenceAudio, clear prompt and seed, and switch to Lyria on handleIterateAudio', () => {
+    component.onModeChanged('Text to Speech');
+    component.prompt = 'Previous prompt that should be cleared';
+    component.seed = 42;
+
+    component.handleIterateAudio({
+      mediaItem: makeAudioJob({
+        id: 512,
+        model: GenerationModelEnum.LYRIA_002,
+        mimeType: 'audio/wav',
+        prompt: '120 BPM jazz keys',
+        titles: ['Midnight Rhodes', 'Velvet Groove'],
+        presignedUrls: ['https://signed/t0.wav', 'https://signed/t1.wav'],
+      }),
+      selectedIndex: 1,
+    });
+
+    expect(component.selectedModel).toBe('lyria');
+    expect(component.lyriaModel).toBe(GenerationModelEnum.LYRIA_002);
+    expect(component.prompt).toBe('');
+    expect(component.seed).toBeUndefined();
+    expect(component.referenceAudio).toEqual({
+      id: 512,
+      type: 'media_item',
+      index: 1,
+      name: 'Velvet Groove (Track 2)',
+    });
+  });
+
+  it('should strip consumed remixState from history.state via history.replaceState on init', () => {
+    const originalState = history.state;
+    history.replaceState(
+      {
+        navigationId: 7,
+        remixState: {
+          lyriaModel: GenerationModelEnum.LYRIA_002,
+          referenceAudio: {
+            id: 901,
+            type: 'media_item',
+            index: 0,
+            name: 'Warm Pad',
+          },
+        },
+      },
+      '',
+    );
+    const replaceSpy = spyOn(history, 'replaceState').and.callThrough();
+
+    try {
+      const freshFixture = TestBed.createComponent(AudioComponent);
+      freshFixture.detectChanges();
+      expect(freshFixture.componentInstance.referenceAudio?.id).toBe(901);
+      expect(replaceSpy).toHaveBeenCalledWith({navigationId: 7}, '');
+      expect(history.state?.remixState).toBeUndefined();
+    } finally {
+      history.replaceState(originalState, '');
+    }
   });
 });

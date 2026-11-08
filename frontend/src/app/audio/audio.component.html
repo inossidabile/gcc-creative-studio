@@ -15,20 +15,21 @@
 -->
 
 <div class="lg:container lg:mx-auto mb-8">
-  <div class="home-margin grid grid-cols-1">
-    <ng-container *ngIf="isLoading; else audioOrGallery">
-      <div class="video-container">
-        <div class="w-full h-full flex justify-center items-center">
-          <mat-progress-spinner
-            color="primary"
-            mode="indeterminate"
-          ></mat-progress-spinner>
-        </div>
+  <div
+    class="home-margin grid grid-cols-1"
+    *ngIf="{job: activeAudioJob$ | async} as vm"
+  >
+    <div *ngIf="isLoading; else audioOrGallery" class="video-container">
+      <div class="w-full h-full flex justify-center items-center">
+        <mat-progress-spinner
+          color="primary"
+          mode="indeterminate"
+        ></mat-progress-spinner>
       </div>
-    </ng-container>
+    </div>
 
     <ng-template #audioOrGallery>
-      <ng-container *ngIf="activeAudioJob$ | async as job">
+      <ng-container *ngIf="vm.job as job">
         <div
           *ngIf="job.status === JobStatus.PROCESSING"
           class="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black bg-opacity-70 rounded-xl"
@@ -77,34 +78,34 @@
             [initialIndex]="0"
             [showSeeMoreInfoButton]="true"
             [showDeleteButton]="true"
+            (iterateAudioClicked)="handleIterateAudio($event)"
             (editWithOmniClicked)="handleEditWithOmni($event)"
             (deleteClicked)="deleteGeneratedMedia()"
           ></app-media-lightbox>
         </div>
       </ng-container>
 
-      <ng-container
-        *ngIf="(activeAudioJob$ | async)?.status !== JobStatus.COMPLETED"
+      <div
+        *ngIf="vm.job?.status !== JobStatus.COMPLETED"
+        class="video-container"
       >
-        <div class="video-container">
-          <video
-            class="w-full h-full object-cover rounded-xl"
-            oncanplay="this.play()"
-            onloadedmetadata="this.muted = true"
-            muted
-            playsinline
-            loop
-            autoplay
-          >
-            <source src="assets/videos/abstract-waves.mp4" type="video/mp4" />
-          </video>
-          <div
-            class="top-[40%] md:top-[20%] lg:top-[30%] xl:top-[40%] absolute w-full text-center justify-center text-3xl md:text-6xl font-bold bg-gradient-to-r from-blue-500 via-violet-500 to-red-400 bg-clip-text text-transparent"
-          >
-            Describe Your Sound
-          </div>
+        <video
+          class="w-full h-full object-cover rounded-xl"
+          oncanplay="this.play()"
+          onloadedmetadata="this.muted = true"
+          muted
+          playsinline
+          loop
+          autoplay
+        >
+          <source src="assets/videos/abstract-waves.mp4" type="video/mp4" />
+        </video>
+        <div
+          class="top-[40%] md:top-[20%] lg:top-[30%] xl:top-[40%] absolute w-full text-center justify-center text-3xl md:text-6xl font-bold bg-gradient-to-r from-blue-500 via-violet-500 to-red-400 bg-clip-text text-transparent"
+        >
+          Describe Your Sound
         </div>
-      </ng-container>
+      </div>
     </ng-template>
 
     <!-- Control Options -->
@@ -195,9 +196,7 @@
             <button
               *ngFor="let lang of languages"
               mat-menu-item
-              [ngClass]="{
-                'menu-item-selected': selectedLanguage === lang.code,
-              }"
+              [ngClass]="{'menu-item-selected': selectedLanguage() === lang.code}"
               (click)="selectLanguage(lang.code)"
             >
               <span>{{ lang.name }}</span>
@@ -223,9 +222,9 @@
           </div>
           <mat-menu #voiceMenu="matMenu">
             <button
-              *ngFor="let voice of voices"
+              *ngFor="let voice of voices()"
               mat-menu-item
-              [ngClass]="{'menu-item-selected': selectedVoice === voice.id}"
+              [ngClass]="{'menu-item-selected': selectedVoice() === voice.id}"
               (click)="selectVoice(voice.id)"
             >
               <span>
@@ -262,6 +261,7 @@
         class="lg:col-span-4 flex flex-col justify-start items-center gap-4 w-full"
       >
         <app-flow-prompt-box
+          #promptBoxHost
           class="w-full max-w-2xl block"
           [prompt]="prompt"
           [outputs]="sampleCount"
@@ -273,18 +273,22 @@
             isLoading ||
             isRewritingPrompt ||
             uploadingReferenceCount > 0 ||
-            (activeAudioJob$ | async)?.status === JobStatus.PROCESSING
+            vm.job?.status === JobStatus.PROCESSING
           "
           [placeholder]="
             selectedModel === 'lyria'
-              ? 'Describe the music...'
+              ? referenceAudio
+                ? 'Describe how to evolve or build on this audio...'
+                : 'Describe the music...'
               : 'Enter text to speak...'
           "
           [showAspectRatio]="false"
           [showRewrite]="selectedModel === 'lyria'"
           [allowReferenceImages]="selectedModel === 'lyria'"
+          [allowReferenceAudio]="selectedModel === 'lyria'"
           [canEditReferenceImages]="false"
           [referenceImages]="referenceImages"
+          [referenceAudio]="referenceAudio"
           (promptChanged)="onPromptChanged($event)"
           (outputsChanged)="onOutputsChanged($event)"
           (modeChanged)="onModeChanged($event)"
@@ -292,6 +296,9 @@
           (openImageSelectorForReference)="openImageSelector()"
           (onReferenceImageDrop)="onReferenceImageDrop($event)"
           (clearReferenceImage)="clearReferenceImage($event.index, $event.event)"
+          (openAudioSelectorForReference)="openAudioSelectorForReference()"
+          (onReferenceAudioDrop)="onReferenceAudioDrop($event)"
+          (clearReferenceAudio)="clearReferenceAudio($event)"
           (rewriteClicked)="rewritePrompt()"
           (generateClicked)="generate()"
         >

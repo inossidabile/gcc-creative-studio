@@ -20,7 +20,7 @@ import {MatSnackBar} from '@angular/material/snack-bar';
 import {NoopAnimationsModule} from '@angular/platform-browser/animations';
 import {MatIconTestingModule} from '@angular/material/icon/testing';
 import {By} from '@angular/platform-browser';
-import {MODEL_CONFIGS} from '../../config/model-config';
+import {isGeminiOmniModel, MODEL_CONFIGS} from '../../config/model-config';
 
 describe('FlowPromptBoxComponent', () => {
   let component: FlowPromptBoxComponent;
@@ -505,6 +505,99 @@ describe('FlowPromptBoxComponent', () => {
       component.selectedGenerationModel = lyria2.viewValue;
       fixture.detectChanges();
       expect(component.canShowReferenceImages()).toBeFalse();
+    });
+
+    it('should not classify Lyria models as Gemini Omni despite supportsAudioReference', () => {
+      expect(isGeminiOmniModel('lyria-002')).toBeFalse();
+      expect(isGeminiOmniModel('lyria-3-clip-preview')).toBeFalse();
+      expect(isGeminiOmniModel('lyria-3-pro-preview')).toBeFalse();
+      expect(isGeminiOmniModel('Lyria 3 Clip Preview')).toBeFalse();
+      expect(isGeminiOmniModel('gemini-omni-flash-preview')).toBeTrue();
+    });
+
+    it('should render Audio Ref slot for both Lyria 3 and Lyria 2 when allowReferenceAudio is true and emit drop/select/clear events', () => {
+      const chirp = MODEL_CONFIGS.find(m => m.value === 'chirp_3')!;
+      spyOn(component.openAudioSelectorForReference, 'emit');
+      spyOn(component.onReferenceAudioDrop, 'emit');
+      spyOn(component.clearReferenceAudio, 'emit');
+
+      component.mode = 'Music';
+      component.allowReferenceAudio = true;
+      component.selectedGenerationModel = lyria2.viewValue;
+      fixture.detectChanges();
+
+      // Shown even for Lyria 2 where canShowReferenceImages() is false
+      expect(component.canShowReferenceImages()).toBeFalse();
+      expect(component.canShowReferenceAudio()).toBeTrue();
+      const audioLabel = fixture.debugElement
+        .queryAll(By.css('span.text-\\[8px\\]'))
+        .find(el => el.nativeElement.textContent.trim() === 'Audio Ref');
+      expect(audioLabel).toBeTruthy();
+
+      const audioSlot = audioLabel!.parent!;
+      audioSlot.triggerEventHandler('click', {});
+      expect(component.openAudioSelectorForReference.emit).toHaveBeenCalled();
+
+      const dropEvt = {
+        preventDefault: jasmine.createSpy('preventDefault'),
+      } as unknown as DragEvent;
+      audioSlot.triggerEventHandler('drop', dropEvt);
+      expect(dropEvt.preventDefault).toHaveBeenCalled();
+      expect(component.onReferenceAudioDrop.emit).toHaveBeenCalledWith(dropEvt);
+
+      // Hidden for TTS models without supportsAudioReference
+      component.selectedGenerationModel = chirp.viewValue;
+      fixture.detectChanges();
+      expect(component.canShowReferenceAudio()).toBeFalse();
+    });
+  });
+
+  describe('Ctrl+Enter in the prompt', () => {
+    // Home and Video listen for Ctrl+Enter on window; the prompt box must not
+    // let its own Ctrl+Enter reach them, or one key press generates twice.
+    let windowKeydown: jasmine.Spy;
+
+    beforeEach(() => {
+      windowKeydown = jasmine.createSpy('windowKeydown');
+      window.addEventListener('keydown', windowKeydown);
+    });
+
+    afterEach(() => {
+      window.removeEventListener('keydown', windowKeydown);
+    });
+
+    function pressCtrlEnter(): KeyboardEvent {
+      const textarea = fixture.debugElement.query(By.css('textarea'))
+        .nativeElement as HTMLTextAreaElement;
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      textarea.dispatchEvent(event);
+      return event;
+    }
+
+    it('emits generateClicked once and keeps the event away from window listeners', () => {
+      const emitSpy = spyOn(component.generateClicked, 'emit');
+
+      const event = pressCtrlEnter();
+
+      expect(emitSpy).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBeTrue();
+      expect(windowKeydown).not.toHaveBeenCalled();
+    });
+
+    it('does not emit while loading and still stops propagation', () => {
+      component.isLoading = true;
+      fixture.detectChanges();
+      const emitSpy = spyOn(component.generateClicked, 'emit');
+
+      pressCtrlEnter();
+
+      expect(emitSpy).not.toHaveBeenCalled();
+      expect(windowKeydown).not.toHaveBeenCalled();
     });
   });
 });

@@ -73,6 +73,27 @@ IMPORTANT!!: JUST RETURN THE REWRITTEN PROMPT DIRECTLY, YOU DON'T NEED TO CLARIF
 The User Prompt to rewrite:
 """
 
+ITERATE_AUDIO_TEXT_PROMPT_TEMPLATE = """Listen carefully to the attached reference audio track and review any provided prior track metadata, then write a complete, self-contained AI music generation prompt that evolves or edits the music according to the user's instructions.
+- Analyze the reference audio's musical identity (incorporating any provided acoustic/musical profile): genre and subgenre, exact tempo (BPM) and time signature, key signature/tonality, chord progression, rhythmic groove, lead and backing instrumentation, studio mix/production texture, and (if present) vocal range/timbre, language, delivery, backing harmonies, and sung lyrics.
+- Treat the user's prompt as targeted iterative progression or section-level editing instructions on top of the reference audio: preserve the reference track's core musical continuity (explicitly stating its genre, BPM, key signature, time signature, harmonic progression, groove, instrumentation, mix character, and vocal profile) EXCEPT for the specific sections, time ranges, instruments, dynamics, or vocals the user asks to change, extend, build up, strip back, or transform.
+- Timestamp-anchored section timeline (for Lyria 3 targets):
+  - Unless the target model constraint specifies Lyria 2, structure the prompt with:
+    1. A concise opening style & sonic header stating genre/subgenre, exact BPM, key signature, time signature, production texture, and (when vocals are present) canonical singer timbre/register (such as 'Female Soprano', 'Female Alto', 'Male Tenor', 'Male Baritone', or 'Weathered Rocker') plus delivery style.
+    2. Explicit chronological `[m:ss - m:ss] Section Name: ...` lines mapping the full track duration (for example, `[0:00 - 0:10] Intro: ...`, `[0:10 - 0:28] Verse 1: ...`, `[0:28 - 0:48] Chorus: ...`). Derive section boundaries from the reference audio and any provided timestamped lyrics/metadata (converting decimal lyric timestamps like `[0.0:5.3]` into `[m:ss - m:ss]` section spans, and fitting within the target model's duration window). Keep unedited time ranges faithful in instrumentation, groove, and harmony while applying modifications strictly to the sections or time windows requested by the user.
+- If a cumulative iteration history of earlier user requests is provided, honor that progression of creative choices unless a later step in the history or the user's new modification explicitly overrides an earlier step.
+- Vocal, `Lyrics:`, and backing-vocal continuity:
+  - If a target model constraint specifies instrumental-only (Lyria 2), produce a cohesive instrumental prose prompt with NO vocals, NO `Lyrics:` block, and NO `[m:ss - m:ss]` brackets, translating any vocal melody into an expressive lead instrument.
+  - Otherwise, if the reference audio or prior metadata contains vocals/lyrics (or the user asks to add vocals) and the user has NOT asked for an instrumental version: append a dedicated `Lyrics:` block after the section timeline organized by section labels (`Verse 1:`, `Chorus:`, etc.), preserving unchanged lyrics verbatim, revising or continuing only the requested lines/sections, and using parenthetical cues like `(moving on)` or `(soft oohs)` for backing vocals, echoes, or ad-libs.
+  - If the reference audio is instrumental and the user does not ask for vocals, keep the arrangement strictly instrumental with no `Lyrics:` block.
+- If reference images are also attached, weave their visual mood, energy, and atmosphere into the musical progression.
+- Respect any elements listed to avoid without appending a separate 'Avoid:' footer.
+- Do NOT mention real artist names, bands, or copyrighted songs, and avoid visual scenes, camera directions, or non-musical sound effects.
+
+IMPORTANT!!: JUST RETURN THE MUSIC PROMPT DIRECTLY, YOU DON'T NEED TO CLARIFY THAT.
+
+Iteration Context and User Instructions:
+"""
+
 
 # Rewrite JSON Prompt Templates
 REWRITE_IMAGE_JSON_PROMPT_TEMPLATE = """Write a prompt for a text-to-image model following the JSON style of the examples of prompts, and then I will give you a prompt that I want you to rewrite.

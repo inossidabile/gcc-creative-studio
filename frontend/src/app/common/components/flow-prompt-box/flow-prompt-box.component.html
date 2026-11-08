@@ -117,9 +117,7 @@
     <div class="mt-4">
       <textarea
         (input)="onPromptInput($event)"
-        (keydown.control.enter)="
-          !isLoading && !isConcatenateVideo() && generateClicked.emit()
-        "
+        (keydown.control.enter)="onPromptCtrlEnter($event)"
         [ngModel]="prompt"
         [disabled]="isConcatenateVideo()"
         class="w-full h-24 bg-transparent text-xl text-neutral-400 placeholder:text-neutral-600 focus:outline-none resize-none disabled:opacity-50 disabled:cursor-not-allowed"
@@ -311,40 +309,42 @@
               </button>
             </ng-container>
           </div>
-
-          <!-- Audio Reference Slot (only for Ingredients to Video mode AND only for Gemini Omni) -->
-          <div
-            *ngIf="mode === 'Ingredients to Video' && isOmniModel()"
-            class="relative h-20 w-20 cursor-pointer rounded-xl border-2 border-dashed border-neutral-700 bg-neutral-800 transition-colors hover:border-neutral-500 hover:bg-neutral-700 flex flex-col items-center justify-center"
-            (click)="!referenceAudio && openAudioSelectorForReference.emit()"
-            [matTooltip]="referenceAudio?.name || ''"
-          >
-            <ng-container *ngIf="!referenceAudio">
-              <mat-icon class="text-neutral-500">audiotrack</mat-icon>
-              <span class="absolute bottom-1 text-[8px] text-neutral-500"
-                >Audio Ref</span
-              >
-            </ng-container>
-            <ng-container *ngIf="referenceAudio">
-              <mat-icon
-                class="text-blue-400 !text-3xl !h-8 !w-8 flex items-center justify-center"
-                >music_note</mat-icon
-              >
-              <span
-                class="absolute bottom-1 text-[8px] text-neutral-300 max-w-[64px] truncate"
-                >{{ referenceAudio.name || 'Audio' }}</span
-              >
-              <button
-                (click)="
-                  $event.stopPropagation(); clearReferenceAudio.emit($event)
-                "
-                class="absolute -right-2 -top-2 rounded-full bg-neutral-900 p-0.5 text-neutral-400 hover:text-white"
-              >
-                <mat-icon class="!h-4 !w-4 text-sm">close</mat-icon>
-              </button>
-            </ng-container>
-          </div>
         </ng-container>
+
+        <!-- Audio Reference Slot (Gemini Omni Ingredients to Video OR Lyria Music) -->
+        <div
+          *ngIf="canShowReferenceAudio()"
+          class="relative h-20 w-20 cursor-pointer rounded-xl border-2 border-dashed border-neutral-700 bg-neutral-800 transition-colors hover:border-neutral-500 hover:bg-neutral-700 flex flex-col items-center justify-center"
+          (click)="!referenceAudio && openAudioSelectorForReference.emit()"
+          (dragover)="$event.preventDefault()"
+          (drop)="$event.preventDefault(); onReferenceAudioDrop.emit($event)"
+          [matTooltip]="referenceAudio?.name || ''"
+        >
+          <ng-container *ngIf="!referenceAudio">
+            <mat-icon class="text-neutral-500">audiotrack</mat-icon>
+            <span class="absolute bottom-1 text-[8px] text-neutral-500"
+              >Audio Ref</span
+            >
+          </ng-container>
+          <ng-container *ngIf="referenceAudio">
+            <mat-icon
+              class="text-blue-400 !text-3xl !h-8 !w-8 flex items-center justify-center"
+              >music_note</mat-icon
+            >
+            <span
+              class="absolute bottom-1 text-[8px] text-neutral-300 max-w-[64px] truncate"
+              >{{ referenceAudio.name || 'Audio' }}</span
+            >
+            <button
+              (click)="
+                $event.stopPropagation(); clearReferenceAudio.emit($event)
+              "
+              class="absolute -right-2 -top-2 rounded-full bg-neutral-900 p-0.5 text-neutral-400 hover:text-white"
+            >
+              <mat-icon class="!h-4 !w-4 text-sm">close</mat-icon>
+            </button>
+          </ng-container>
+        </div>
 
         <!-- Only for Video to Image mode -->
         @if (mode === 'Video to Image') {

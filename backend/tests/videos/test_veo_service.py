@@ -1797,94 +1797,182 @@ class TestBackgroundWorkers:
     @pytest.mark.parametrize(
         ("parent_workspace_id", "parent_mime_type"),
         [
-            (999, "video/mp4"),  # Cross-workspace video hijack attempt
-            (1, "audio/mpeg"),  # Audio item ID collision
+            (999, "video/mp4"),
+            (1, "audio/mpeg"),
         ],
     )
     @patch("src.database.WorkerDatabase")
     @patch("src.videos.veo_service.GenAIModelSetup.get_omni_client")
     @patch("src.videos.veo_service.generate_thumbnail")
+    @patch("src.videos.veo_service.MediaRepository")
+    @patch("src.videos.veo_service.GcsService")
     def test_process_video_in_background_omni_turn2_rejects_foreign_or_non_video_parent(
         self,
+        mock_gcs_class,
+        mock_media_repo_class,
         mock_thumb,
         mock_omni_client_init,
         mock_worker_db_class,
         parent_workspace_id,
         parent_mime_type,
     ):
-        from src.common.schema.media_item_model import (
-            JobStatusEnum,
-            MediaItemModel,
+        from src.common.schema.media_item_model import JobStatusEnum
+
+        mock_worker_db_class.return_value.__aenter__.return_value = MagicMock(
+            return_value=AsyncMock()
         )
-
-        sample_dto = CreateVeoDto(
-            workspace_id=1,
-            prompt="Use this audio track in video",
-            generation_model=GenerationModelEnum.GEMINI_OMNI,
-            parent_media_item_id=77,
+        mock_vertex_client = mock_omni_client_init.return_value
+        mock_content = MagicMock(
+            data="ZmFrZS1vbW5pLXZpZGVvLWJ5dGVz", mime_type="video/mp4"
         )
-
-        mock_db_context = AsyncMock()
-        mock_db_factory = MagicMock(return_value=mock_db_context)
-        mock_worker_db_class.return_value.__aenter__.return_value = (
-            mock_db_factory
-        )
-
-        mock_vertex_client = MagicMock()
-        mock_omni_client_init.return_value = mock_vertex_client
-
-        mock_interaction = MagicMock()
-        mock_interaction.id = "interaction-turn1-safe"
-        mock_step = MagicMock()
-        mock_step.type = "model_output"
-        mock_content = MagicMock()
         mock_content.type = "video"
-        mock_content.data = "ZmFrZS1vbW5pLXZpZGVvLWJ5dGVz"
-        mock_content.mime_type = "video/mp4"
-        mock_step.content = [mock_content]
-        mock_interaction.steps = [mock_step]
-        mock_vertex_client.interactions.create.return_value = mock_interaction
+        mock_step = MagicMock(content=[mock_content])
+        mock_step.type = "model_output"
+        mock_vertex_client.interactions.create.return_value = MagicMock(
+            id="interaction-turn1-safe", steps=[mock_step]
+        )
         mock_thumb.return_value = "/tmp/thumbnails/thumb.png"
 
-        with (
-            patch(
-                "src.videos.veo_service.MediaRepository",
-            ) as mock_media_repo_class,
-            patch(
-                "src.videos.veo_service.GcsService",
-            ) as mock_gcs_class,
-        ):
-            mock_media_repo = AsyncMock()
-            mock_media_repo_class.return_value = mock_media_repo
+        mock_media_repo = AsyncMock()
+        mock_media_repo_class.return_value = mock_media_repo
+        mock_media_repo.get_by_id.return_value = MediaItemModel(
+            id=77,
+            workspace_id=parent_workspace_id,
+            user_id=1,
+            user_email="other@t.com",
+            mime_type=parent_mime_type,
+            model=GenerationModelEnum.GEMINI_OMNI,
+            aspect_ratio="16:9",
+            gcs_uris=["gs://b/77.mp4"],
+            thumbnail_uris=[],
+            raw_data={
+                "interaction_id": "hijacked-interaction-999",
+                "signature": "sig-999",
+            },
+        )
+        mock_gcs = mock_gcs_class.return_value
+        mock_gcs.upload_file_to_gcs.return_value = "gs://bucket/safe_turn1.mp4"
 
-            mock_parent_item = MediaItemModel(
-                id=77,
-                workspace_id=parent_workspace_id,
-                user_id=1,
-                user_email="other@t.com",
-                mime_type=parent_mime_type,
-                model=GenerationModelEnum.GEMINI_OMNI,
-                aspect_ratio="16:9",
-                gcs_uris=["gs://b/77.mp4"],
+        _process_video_in_background(
+            media_item_id=1235,
+            request_dto=CreateVeoDto(
+                workspace_id=1,
+                prompt="Use this audio track in video",
+                generation_model=GenerationModelEnum.GEMINI_OMNI,
+                parent_media_item_id=77,
+            ),
+            user_email="test@user.com",
+        )
+
+        mock_gcs.download_from_gcs.assert_not_called()
+        mock_vertex_client.interactions.create.assert_called_once()
+        assert (
+            "previous_interaction_id"
+            not in mock_vertex_client.interactions.create.call_args[1]
+        )
+        assert (
+            mock_media_repo.update.call_args[0][1]["status"]
+            == JobStatusEnum.COMPLETED
+        )
+
+    @pytest.mark.anyio
+    async def test_resolve_omni_reference_enforces_workspace_and_mime(
+        self,
+        veo_service,
+        mock_media_repo,
+        mock_source_asset_repo,
+        sample_user,
+    ):
+        from src.common.base_dto import AssetReferenceDto
+        from src.source_assets.schema.source_asset_model import (
+            AssetScopeEnum,
+            AssetTypeEnum,
+            SourceAssetModel,
+        )
+        from src.videos.veo_service import _resolve_omni_reference
+
+        def _make_item(item_id, ws_id, mime, model, uri):
+            return MediaItemModel(
+                id=item_id,
+                workspace_id=ws_id,
+                user_id=2,
+                user_email="u@example.com",
+                mime_type=mime,
+                model=model,
+                aspect_ratio="1:1",
+                gcs_uris=[uri],
                 thumbnail_uris=[],
-                raw_data={"omni_interaction_id": "hijacked-interaction-999"},
-            )
-            mock_media_repo.get_by_id.return_value = mock_parent_item
-
-            mock_gcs_service = MagicMock()
-            mock_gcs_class.return_value = mock_gcs_service
-            mock_gcs_service.upload_file_to_gcs.return_value = (
-                "gs://bucket/safe_turn1.mp4"
             )
 
-            _process_video_in_background(
-                media_item_id=1235,
-                request_dto=sample_dto,
-                user_email="test@user.com",
+        def _make_asset(asset_id, mime, uri, scope):
+            return SourceAssetModel(
+                id=asset_id,
+                workspace_id=999,
+                user_id=2,
+                gcs_uri=uri,
+                original_filename=uri.rsplit("/", 1)[-1],
+                mime_type=mime,
+                file_hash=f"hash{asset_id}",
+                scope=scope,
+                asset_type=AssetTypeEnum.GENERIC_VIDEO,
             )
 
-            mock_vertex_client.interactions.create.assert_called_once()
-            call_kwargs = mock_vertex_client.interactions.create.call_args[1]
-            assert "previous_interaction_id" not in call_kwargs
-            update_dict = mock_media_repo.update.call_args[0][1]
-            assert update_dict["status"] == JobStatusEnum.COMPLETED
+        mock_media_repo.get_by_id.return_value = _make_item(
+            42,
+            999,
+            MimeTypeEnum.AUDIO_MPEG,
+            GenerationModelEnum.LYRIA_3_PRO_PREVIEW,
+            "gs://b/42.mp3",
+        )
+        with pytest.raises(ValueError, match="not found in this workspace"):
+            await veo_service.start_video_generation_job(
+                request_dto=CreateVeoDto(
+                    workspace_id=1,
+                    prompt="Music video",
+                    generation_model=GenerationModelEnum.GEMINI_OMNI,
+                    reference_audio=AssetReferenceDto(id=42, type="media_item"),
+                ),
+                user=sample_user,
+                executor=MagicMock(),
+            )
+        mock_media_repo.create.assert_not_called()
+
+        mock_source_asset_repo.get_by_id.return_value = _make_asset(
+            88, MimeTypeEnum.VIDEO_MP4, "gs://b/88.mp4", AssetScopeEnum.PRIVATE
+        )
+        with pytest.raises(ValueError, match="not found in this workspace"):
+            await _resolve_omni_reference(
+                AssetReferenceDto(id=88, type="source_asset"),
+                "video/",
+                1,
+                mock_media_repo,
+                mock_source_asset_repo,
+            )
+
+        mock_source_asset_repo.get_by_id.return_value = _make_asset(
+            89, MimeTypeEnum.AUDIO_MP3, "gs://b/89.mp3", AssetScopeEnum.SYSTEM
+        )
+        uri, mime = await _resolve_omni_reference(
+            AssetReferenceDto(id=89, type="source_asset"),
+            "audio/",
+            1,
+            mock_media_repo,
+            mock_source_asset_repo,
+        )
+        assert (uri, mime) == ("gs://b/89.mp3", "audio/mpeg")
+
+        mock_media_repo.get_by_id.return_value = _make_item(
+            43,
+            1,
+            MimeTypeEnum.IMAGE_PNG,
+            GenerationModelEnum.IMAGEN_3_001,
+            "gs://b/43.png",
+        )
+        with pytest.raises(ValueError, match="not a valid video item"):
+            await _resolve_omni_reference(
+                AssetReferenceDto(id=43, type="media_item"),
+                "video/",
+                1,
+                mock_media_repo,
+                mock_source_asset_repo,
+            )

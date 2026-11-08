@@ -31,6 +31,7 @@ from google.genai import types
 from src.auth.iam_signer_credentials_service import IamSignerCredentials
 from src.common.base_dto import (
     AspectRatioEnum,
+    AssetReferenceDto,
     GenerationModelEnum,
     MimeTypeEnum,
     ReferenceImageTypeEnum,
@@ -57,6 +58,7 @@ from src.multimodal.gemini_service import GeminiService, PromptTargetEnum
 from src.source_assets.repository.source_asset_repository import (
     SourceAssetRepository,
 )
+from src.source_assets.schema.source_asset_model import AssetScopeEnum
 from src.users.user_model import UserModel
 from src.videos.dto.concatenate_videos_dto import ConcatenateVideosDto
 from src.videos.dto.create_veo_dto import CreateVeoDto
@@ -90,6 +92,63 @@ def _format_omni_prompt(
     ):
         return f"{prompt}\nAspect ratio: 16:9 widescreen landscape format. Resolution: 720p."
     return prompt
+
+
+def _mime_str(obj: object | None) -> str:
+    mime = getattr(obj, "mime_type", None) if obj else None
+    return str(mime.value if hasattr(mime, "value") else mime or "")
+
+
+async def _resolve_omni_reference(
+    ref: AssetReferenceDto,
+    expected_mime_prefix: str,
+    workspace_id: int,
+    media_repo: MediaRepository,
+    source_asset_repo: SourceAssetRepository,
+) -> tuple[str, str]:
+    """Validates workspace scope and MIME family for Omni reference video/audio."""
+    kind = expected_mime_prefix.rstrip("/")
+    if ref.type == "media_item":
+        item = await media_repo.get_by_id(ref.id)
+        mime_val = _mime_str(item)
+        if (
+            not item
+            or item.workspace_id != workspace_id
+            or not mime_val.startswith(expected_mime_prefix)
+            or not item.gcs_uris
+        ):
+            raise ValueError(
+                f"MediaItem '{ref.id}' was not found in this workspace or is not a valid {kind} item."
+            )
+        idx = ref.index or 0
+        gcs_uri = item.gcs_uris[idx if 0 <= idx < len(item.gcs_uris) else 0]
+        if expected_mime_prefix == "audio/" and (
+            gcs_uri.lower().endswith(".mp3")
+            or mime_val == MimeTypeEnum.AUDIO_MP3.value
+        ):
+            mime_val = MimeTypeEnum.AUDIO_MPEG.value
+        return gcs_uri, mime_val
+
+    asset = await source_asset_repo.get_by_id(ref.id)
+    mime_val = _mime_str(asset)
+    if (
+        not asset
+        or (
+            asset.workspace_id != workspace_id
+            and asset.scope != AssetScopeEnum.SYSTEM
+        )
+        or not mime_val.startswith(expected_mime_prefix)
+        or not asset.gcs_uri
+    ):
+        raise ValueError(
+            f"SourceAsset '{ref.id}' was not found in this workspace or is not a valid {kind} asset."
+        )
+    if (
+        expected_mime_prefix == "audio/"
+        and mime_val == MimeTypeEnum.AUDIO_MP3.value
+    ):
+        mime_val = MimeTypeEnum.AUDIO_MPEG.value
+    return asset.gcs_uri, mime_val
 
 
 # --- STANDALONE WORKER FUNCTION ---
@@ -400,66 +459,28 @@ def _process_video_in_background(
                             interaction_id = None
                             thought_signature = None
 
-                            # Resolve reference video & reference audio URIs
-                            ref_video_uri = None
-                            if request_dto.reference_video:
-                                ref = request_dto.reference_video
-                                if ref.type == "media_item":
-                                    parent_item = await media_repo.get_by_id(
-                                        ref.id
-                                    )
-                                    if parent_item and parent_item.gcs_uris:
-                                        index = ref.index or 0
-                                        if (
-                                            0
-                                            <= index
-                                            < len(parent_item.gcs_uris)
-                                        ):
-                                            ref_video_uri = (
-                                                parent_item.gcs_uris[index]
-                                            )
-                                        else:
-                                            ref_video_uri = (
-                                                parent_item.gcs_uris[0]
-                                            )
-                                else:
-                                    video_asset = (
-                                        await source_asset_repo.get_by_id(
-                                            ref.id
-                                        )
-                                    )
-                                    if video_asset:
-                                        ref_video_uri = video_asset.gcs_uri
-
-                            ref_audio_uri = None
-                            if request_dto.reference_audio:
-                                ref = request_dto.reference_audio
-                                if ref.type == "media_item":
-                                    parent_item = await media_repo.get_by_id(
-                                        ref.id
-                                    )
-                                    if parent_item and parent_item.gcs_uris:
-                                        index = ref.index or 0
-                                        if (
-                                            0
-                                            <= index
-                                            < len(parent_item.gcs_uris)
-                                        ):
-                                            ref_audio_uri = (
-                                                parent_item.gcs_uris[index]
-                                            )
-                                        else:
-                                            ref_audio_uri = (
-                                                parent_item.gcs_uris[0]
-                                            )
-                                else:
-                                    audio_asset = (
-                                        await source_asset_repo.get_by_id(
-                                            ref.id
-                                        )
-                                    )
-                                    if audio_asset:
-                                        ref_audio_uri = audio_asset.gcs_uri
+                            ref_video_uri, ref_video_mime = (
+                                await _resolve_omni_reference(
+                                    request_dto.reference_video,
+                                    "video/",
+                                    request_dto.workspace_id,
+                                    media_repo,
+                                    source_asset_repo,
+                                )
+                                if request_dto.reference_video
+                                else (None, "video/mp4")
+                            )
+                            ref_audio_uri, ref_audio_mime = (
+                                await _resolve_omni_reference(
+                                    request_dto.reference_audio,
+                                    "audio/",
+                                    request_dto.workspace_id,
+                                    media_repo,
+                                    source_asset_repo,
+                                )
+                                if request_dto.reference_audio
+                                else (None, "audio/wav")
+                            )
 
                             # Check for Turn 2 conversational input context
                             is_turn_2 = False
@@ -467,20 +488,13 @@ def _process_video_in_background(
                                 parent_media_item = await media_repo.get_by_id(
                                     request_dto.parent_media_item_id
                                 )
-                                parent_mime = (
-                                    getattr(
-                                        parent_media_item.mime_type,
-                                        "value",
-                                        parent_media_item.mime_type,
-                                    )
-                                    if parent_media_item
-                                    else ""
-                                ) or ""
                                 if (
                                     not parent_media_item
                                     or parent_media_item.workspace_id
                                     != request_dto.workspace_id
-                                    or not str(parent_mime).startswith("video/")
+                                    or not _mime_str(
+                                        parent_media_item
+                                    ).startswith("video/")
                                 ):
                                     worker_logger.warning(
                                         "Parent MediaItem %s is not a valid video in workspace %s; falling back to Turn 1.",
@@ -639,23 +653,18 @@ def _process_video_in_background(
                                         }
                                     )
 
-                                if ref_video_uri:
-                                    t1_inputs.append(
-                                        {
-                                            "type": "video",
-                                            "mime_type": "video/mp4",
-                                            "uri": ref_video_uri,
-                                        }
-                                    )
-
-                                if ref_audio_uri:
-                                    t1_inputs.append(
-                                        {
-                                            "type": "audio",
-                                            "mime_type": "audio/wav",
-                                            "uri": ref_audio_uri,
-                                        }
-                                    )
+                                for kind, uri, mime in (
+                                    ("video", ref_video_uri, ref_video_mime),
+                                    ("audio", ref_audio_uri, ref_audio_mime),
+                                ):
+                                    if uri:
+                                        t1_inputs.append(
+                                            {
+                                                "type": kind,
+                                                "mime_type": mime,
+                                                "uri": uri,
+                                            }
+                                        )
 
                             final_gcs_uris = []
                             permanent_thumbnail_gcs_uris = []
@@ -1378,40 +1387,38 @@ class VeoService:
                     ),
                 )
 
-        if request_dto.reference_video:
-            ref = request_dto.reference_video
+        for ref, mime_prefix, role in (
+            (
+                request_dto.reference_video,
+                "video/",
+                AssetRoleEnum.VIDEO_REFERENCE,
+            ),
+            (
+                request_dto.reference_audio,
+                "audio/",
+                AssetRoleEnum.AUDIO_REFERENCE,
+            ),
+        ):
+            if not ref:
+                continue
+            await _resolve_omni_reference(
+                ref=ref,
+                expected_mime_prefix=mime_prefix,
+                workspace_id=request_dto.workspace_id,
+                media_repo=self.media_repo,
+                source_asset_repo=self.source_asset_repo,
+            )
             if ref.type == "media_item":
                 source_media_items.append(
                     SourceMediaItemLink(
                         media_item_id=ref.id,
                         media_index=ref.index or 0,
-                        role=AssetRoleEnum.VIDEO_REFERENCE,
+                        role=role,
                     )
                 )
             else:
                 source_assets.append(
-                    SourceAssetLink(
-                        asset_id=ref.id,
-                        role=AssetRoleEnum.VIDEO_REFERENCE,
-                    )
-                )
-
-        if request_dto.reference_audio:
-            ref = request_dto.reference_audio
-            if ref.type == "media_item":
-                source_media_items.append(
-                    SourceMediaItemLink(
-                        media_item_id=ref.id,
-                        media_index=ref.index or 0,
-                        role=AssetRoleEnum.AUDIO_REFERENCE,
-                    )
-                )
-            else:
-                source_assets.append(
-                    SourceAssetLink(
-                        asset_id=ref.id,
-                        role=AssetRoleEnum.AUDIO_REFERENCE,
-                    )
+                    SourceAssetLink(asset_id=ref.id, role=role)
                 )
 
         # 1. Create a placeholder MediaItem (without ID, let DB generate it)

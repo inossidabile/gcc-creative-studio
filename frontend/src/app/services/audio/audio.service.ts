@@ -20,7 +20,10 @@ import {Observable} from 'rxjs';
 import {environment} from '../../../environments/environment';
 import {LanguageEnum, VoiceEnum} from '../../audio/audio.constants';
 import {MediaItem} from '../../common/models/media-item.model';
-import {SourceMediaItemLink} from '../../common/models/search.model';
+import {
+  AssetReferenceDto,
+  SourceMediaItemLink,
+} from '../../common/models/search.model';
 
 // 1. Define the Enum to match Backend exactly
 export enum GenerationModelEnum {
@@ -50,6 +53,7 @@ export interface CreateAudioDto {
   seed?: number;
   sourceAssetIds?: number[];
   sourceMediaItems?: SourceMediaItemLink[];
+  referenceAudio?: AssetReferenceDto | null;
 
   // TTS Specific
   languageCode?: LanguageEnum;

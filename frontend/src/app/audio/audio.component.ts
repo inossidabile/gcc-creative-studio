@@ -14,7 +14,15 @@
  * limitations under the License.
  */
 
-import {Component, Inject, OnInit, computed, signal} from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  Inject,
+  OnInit,
+  ViewChild,
+  computed,
+  signal,
+} from '@angular/core';
 import {Router} from '@angular/router';
 import {
   CreateAudioDto,
@@ -24,7 +32,12 @@ import {MatChipInputEvent} from '@angular/material/chips';
 import {MatSnackBar} from '@angular/material/snack-bar';
 import {MatDialog} from '@angular/material/dialog';
 import {WorkspaceStateService} from '../services/workspace/workspace-state.service';
-import {JobStatus, MediaItem} from '../common/models/media-item.model';
+import {
+  JobStatus,
+  MediaItem,
+  buildAudioIterationRemixState,
+  buildOmniRemixState,
+} from '../common/models/media-item.model';
 import {AddVoiceDialogComponent} from '../components/add-voice-dialog/add-voice-dialog.component';
 import {ConfirmationDialogComponent} from '../common/components/confirmation-dialog/confirmation-dialog.component';
 import {MatIconRegistry} from '@angular/material/icon';
@@ -46,6 +59,7 @@ import {
   MediaItemSelection,
 } from '../common/components/image-selector/image-selector.component';
 import {
+  ReferenceAudio,
   ReferenceImage,
   SourceMediaItemLink,
 } from '../common/models/search.model';
@@ -60,8 +74,31 @@ import {
   handleSuccessSnackbar,
 } from '../utils/handleMessageSnackbar';
 
-// UI Helper type
 type UiModelType = 'lyria' | 'chirp' | 'gemini-tts';
+export type AudioReferenceSelection = ReferenceAudio;
+
+const LYRIA_MODEL_HINTS: Record<string, string> = {
+  'lyria-3-clip-preview': '30-second clips · fast',
+  'lyria-3-pro-preview': 'Full songs up to ~3 min · slower',
+  'lyria-002': '~33-second instrumental clips (legacy)',
+};
+
+const AUDIO_EXT_MIMES: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  webm: 'audio/webm',
+};
+
+const SUPPORTED_AUDIO_MIMES: Record<string, string> = {
+  'audio/mpeg': 'audio/mpeg',
+  'audio/mp3': 'audio/mpeg',
+  'audio/wav': 'audio/wav',
+  'audio/x-wav': 'audio/wav',
+  'audio/wave': 'audio/wav',
+  'audio/ogg': 'audio/ogg',
+  'audio/webm': 'audio/webm',
+};
 
 interface VoiceOption {
   id: VoiceEnum | string; // Allow string for custom cloned voices later
@@ -80,7 +117,6 @@ interface LanguageOption {
   styleUrls: ['./audio.component.scss'],
 })
 export class AudioComponent implements OnInit {
-  // UI State (Signal-backed for reactivity with FlowPromptBox)
   private selectedModelSignal = signal<UiModelType>('lyria');
   get selectedModel(): UiModelType {
     return this.selectedModelSignal();
@@ -93,12 +129,10 @@ export class AudioComponent implements OnInit {
   isRewritingPrompt = false;
   uploadingReferenceCount = 0;
 
-  // Job Tracking
   activeAudioJob$: Observable<MediaItem | null>;
   public readonly JobStatus = JobStatus;
   showErrorOverlay = true;
 
-  // FlowPromptBox Modes & Models
   readonly audioModes = [
     {value: 'Music', icon: 'music_note', label: 'Music (Lyria)'},
     {
@@ -114,8 +148,6 @@ export class AudioComponent implements OnInit {
     m => m.type === 'AUDIO' && !m.value.startsWith('lyria'),
   );
 
-  // Lyria Specific Inputs
-  /** Concrete Lyria model used when the "Lyria (Music)" family is selected. */
   private lyriaModelSignal = signal<string>(DEFAULT_LYRIA_MODEL);
   get lyriaModel(): string {
     return this.lyriaModelSignal();
@@ -124,14 +156,7 @@ export class AudioComponent implements OnInit {
     this.lyriaModelSignal.set(val);
   }
 
-  /** Concrete TTS model used when Text to Speech is selected. */
-  private ttsModelSignal = signal<string>(DEFAULT_TTS_MODEL);
-  get ttsModel(): string {
-    return this.ttsModelSignal();
-  }
-  set ttsModel(val: string) {
-    this.ttsModelSignal.set(val);
-  }
+  readonly ttsModel = signal<string>(DEFAULT_TTS_MODEL);
 
   prompt = '';
   negativePrompt = '';
@@ -140,23 +165,10 @@ export class AudioComponent implements OnInit {
   sampleCount = 1;
   enhancePrompt = false;
   referenceImages: ReferenceImage[] = [];
+  referenceAudio: AudioReferenceSelection | null = null;
 
-  // TTS & Chirp Specific Inputs
-  private selectedLanguageSignal = signal<LanguageEnum>(LanguageEnum.EN_US);
-  get selectedLanguage(): LanguageEnum {
-    return this.selectedLanguageSignal();
-  }
-  set selectedLanguage(val: LanguageEnum) {
-    this.selectedLanguageSignal.set(val);
-  }
-
-  private selectedVoiceSignal = signal<VoiceEnum | string>(VoiceEnum.PUCK);
-  get selectedVoice(): VoiceEnum | string {
-    return this.selectedVoiceSignal();
-  }
-  set selectedVoice(val: VoiceEnum | string) {
-    this.selectedVoiceSignal.set(val);
-  }
+  readonly selectedLanguage = signal<LanguageEnum>(LanguageEnum.EN_US);
+  readonly selectedVoice = signal<VoiceEnum | string>(VoiceEnum.PUCK);
 
   languages: LanguageOption[] = [
     {code: LanguageEnum.AR_XA, name: 'Arabic'},
@@ -208,7 +220,7 @@ export class AudioComponent implements OnInit {
   ];
 
   // Map Enums to Voice Options
-  private voicesSignal = signal<VoiceOption[]>([
+  readonly voices = signal<VoiceOption[]>([
     {id: VoiceEnum.ACHERNAR, name: 'Achernar (Female)', type: 'preset'},
     {id: VoiceEnum.ACHIRD, name: 'Achird (Male)', type: 'preset'},
     {id: VoiceEnum.ALGENIB, name: 'Algenib (Male)', type: 'preset'},
@@ -240,14 +252,7 @@ export class AudioComponent implements OnInit {
     {id: VoiceEnum.ZEPHYR, name: 'Zephyr (Female)', type: 'preset'},
     {id: VoiceEnum.ZUBENELGENUBI, name: 'Zubenelgenubi (Male)', type: 'preset'},
   ]);
-  get voices(): VoiceOption[] {
-    return this.voicesSignal();
-  }
-  set voices(val: VoiceOption[]) {
-    this.voicesSignal.set(val);
-  }
 
-  // --- Computed Signals for FlowPromptBox ---
   currentAudioMode = computed(() =>
     this.selectedModelSignal() === 'lyria' ? 'Music' : 'Text to Speech',
   );
@@ -269,7 +274,7 @@ export class AudioComponent implements OnInit {
     const activeTtsValue =
       this.selectedModelSignal() === 'chirp'
         ? GenerationModelEnum.CHIRP_3
-        : this.ttsModelSignal();
+        : this.ttsModel();
     return (
       this.ttsModels.find(m => m.value === activeTtsValue)?.viewValue ??
       'Gemini 2.5 Flash TTS'
@@ -277,45 +282,24 @@ export class AudioComponent implements OnInit {
   });
 
   selectedVoiceLabel = computed(() => {
-    const found = this.voicesSignal().find(
-      v => v.id === this.selectedVoiceSignal(),
-    );
-    if (!found) {
-      return String(this.selectedVoiceSignal() || 'Voice');
-    }
-    return found.name.split(' (')[0];
+    const found = this.voices().find(v => v.id === this.selectedVoice());
+    return found
+      ? found.name.split(' (')[0]
+      : String(this.selectedVoice() || 'Voice');
   });
-
-  selectedLanguageLabel = computed(() => this.selectedLanguageSignal());
 
   selectedLanguageName = computed(() => {
-    const found = this.languages.find(
-      l => l.code === this.selectedLanguageSignal(),
-    );
-    return found ? found.name : String(this.selectedLanguageSignal());
+    const found = this.languages.find(l => l.code === this.selectedLanguage());
+    return found ? found.name : String(this.selectedLanguage());
   });
 
-  private lyriaSupportsSeedSignal = computed(
-    () => this.selectedLyriaConfigSignal()?.capabilities?.supportsSeed ?? false,
-  );
+  @ViewChild('promptBoxHost', {read: ElementRef})
+  promptBoxHost?: ElementRef<HTMLElement>;
 
-  private lyriaMaxReferenceImagesSignal = computed(
-    () =>
-      this.selectedLyriaConfigSignal()?.capabilities?.maxReferenceImages ?? 0,
-  );
-
-  private lyriaModelHintSignal = computed(() => {
-    switch (this.lyriaModelSignal()) {
-      case 'lyria-3-clip-preview':
-        return '30-second clips · fast';
-      case 'lyria-3-pro-preview':
-        return 'Full songs up to ~3 min · slower';
-      case 'lyria-002':
-        return '~33-second instrumental clips (legacy)';
-      default:
-        return '';
-    }
-  });
+  private pendingRemixState?: {
+    lyriaModel?: string;
+    referenceAudio?: AudioReferenceSelection;
+  };
 
   constructor(
     private searchService: SearchService,
@@ -330,24 +314,40 @@ export class AudioComponent implements OnInit {
     private sourceAssetService: SourceAssetService,
   ) {
     this.activeAudioJob$ = this.searchService.activeAudioJob$;
+    const navigation = this.router.getCurrentNavigation?.();
+    const remixState =
+      navigation?.extras?.state?.['remixState'] ||
+      (typeof history !== 'undefined' ? history.state?.remixState : undefined);
+    if (remixState?.referenceAudio) {
+      this.pendingRemixState = remixState;
+    }
   }
 
   ngOnInit() {
     this.restoreState();
+    if (this.pendingRemixState?.referenceAudio) {
+      const {referenceAudio, lyriaModel} = this.pendingRemixState;
+      this.pendingRemixState = undefined;
+      if (typeof history !== 'undefined' && history.state?.remixState) {
+        const {remixState: _, ...restState} = history.state;
+        history.replaceState(restState, '');
+      }
+      this.applyAudioIteration(referenceAudio, lyriaModel);
+    }
   }
 
   saveState() {
     this.audioStateService.updateState({
       model: this.selectedModel,
       lyriaModel: this.lyriaModel,
-      ttsModel: this.ttsModel,
+      ttsModel: this.ttsModel(),
       prompt: this.prompt,
       negativePrompt: this.negativePrompt,
       seed: this.seed,
       sampleCount: this.sampleCount,
       enhancePrompt: this.enhancePrompt,
-      selectedLanguage: this.selectedLanguage,
-      selectedVoice: this.selectedVoice,
+      selectedLanguage: this.selectedLanguage(),
+      selectedVoice: this.selectedVoice(),
     });
   }
 
@@ -355,11 +355,12 @@ export class AudioComponent implements OnInit {
     const state = this.audioStateService.getState();
     this.selectedModel = state.model as UiModelType;
     this.lyriaModel = state.lyriaModel || DEFAULT_LYRIA_MODEL;
-    this.ttsModel =
+    this.ttsModel.set(
       state.ttsModel ||
-      (this.selectedModel === 'chirp'
-        ? GenerationModelEnum.CHIRP_3
-        : DEFAULT_TTS_MODEL);
+        (this.selectedModel === 'chirp'
+          ? GenerationModelEnum.CHIRP_3
+          : DEFAULT_TTS_MODEL),
+    );
     this.prompt = state.prompt;
     this.negativePrompt = state.negativePrompt;
     this.negativePhrases = this.negativePrompt
@@ -371,28 +372,24 @@ export class AudioComponent implements OnInit {
     this.seed = state.seed;
     this.sampleCount = state.sampleCount;
     this.enhancePrompt = Boolean(state.enhancePrompt);
-    this.selectedLanguage = state.selectedLanguage as LanguageEnum;
-    this.selectedVoice = state.selectedVoice as VoiceEnum;
+    this.selectedLanguage.set(state.selectedLanguage as LanguageEnum);
+    this.selectedVoice.set(state.selectedVoice as VoiceEnum);
   }
 
-  /** Capabilities of the currently selected Lyria model (from MODEL_CONFIGS). */
   get selectedLyriaConfig(): GenerationModelConfig | undefined {
     return this.selectedLyriaConfigSignal();
   }
 
-  /** Lyria 3 (Interactions API) does not accept a seed; Lyria 2 does. */
   get lyriaSupportsSeed(): boolean {
-    return this.lyriaSupportsSeedSignal();
+    return this.selectedLyriaConfig?.capabilities?.supportsSeed ?? false;
   }
 
-  /** Max reference images supported by the active Lyria model (10 for Lyria 3, 0 for Lyria 2). */
   get lyriaMaxReferenceImages(): number {
-    return this.lyriaMaxReferenceImagesSignal();
+    return this.selectedLyriaConfig?.capabilities?.maxReferenceImages ?? 0;
   }
 
-  /** Short, human-readable description of the selected Lyria model. */
   get lyriaModelHint(): string {
-    return this.lyriaModelHintSignal();
+    return LYRIA_MODEL_HINTS[this.lyriaModel] ?? '';
   }
 
   addNegativePhrase(event: MatChipInputEvent): void {
@@ -411,7 +408,7 @@ export class AudioComponent implements OnInit {
   }
 
   selectLanguage(code: LanguageEnum): void {
-    this.selectedLanguage = code;
+    this.selectedLanguage.set(code);
     this.saveState();
   }
 
@@ -425,12 +422,12 @@ export class AudioComponent implements OnInit {
   }
 
   onModeChanged(mode: string) {
-    if (mode === 'Music') {
-      this.selectedModel = 'lyria';
-    } else {
-      this.selectedModel =
-        this.ttsModel === GenerationModelEnum.CHIRP_3 ? 'chirp' : 'gemini-tts';
-    }
+    this.selectedModel =
+      mode === 'Music'
+        ? 'lyria'
+        : this.ttsModel() === GenerationModelEnum.CHIRP_3
+          ? 'chirp'
+          : 'gemini-tts';
     this.saveState();
   }
 
@@ -441,7 +438,7 @@ export class AudioComponent implements OnInit {
       this.onLyriaModelChange(model.value);
       return;
     }
-    this.ttsModel = model.value;
+    this.ttsModel.set(model.value);
     this.selectedModel =
       model.value === GenerationModelEnum.CHIRP_3 ? 'chirp' : 'gemini-tts';
     this.saveState();
@@ -498,17 +495,16 @@ export class AudioComponent implements OnInit {
 
     dialogRef.afterClosed().subscribe((result: any) => {
       if (!result) return;
-      const results = Array.isArray(result) ? result : [result];
-      results.forEach(res => this.processReferenceInput(res));
+      (Array.isArray(result) ? result : [result]).forEach(res =>
+        this.processReferenceInput(res),
+      );
     });
   }
 
   onReferenceImageDrop(event: DragEvent) {
     event.preventDefault();
-    if (this.selectedModel !== 'lyria') return;
-
     const files = event.dataTransfer?.files;
-    if (!files || files.length === 0) return;
+    if (this.selectedModel !== 'lyria' || !files?.length) return;
 
     const maxRefs = this.lyriaMaxReferenceImages;
     let availableSlots =
@@ -523,31 +519,27 @@ export class AudioComponent implements OnInit {
 
     for (let i = 0; i < files.length && availableSlots > 0; i++) {
       const file = files[i];
-      if (file.type.startsWith('image/')) {
-        availableSlots--;
-        this.uploadingReferenceCount++;
-        this.sourceAssetService
-          .uploadAsset(file, {assetType: AssetTypeEnum.GENERIC_IMAGE})
-          .pipe(
-            finalize(
-              () =>
-                (this.uploadingReferenceCount = Math.max(
-                  0,
-                  this.uploadingReferenceCount - 1,
-                )),
-            ),
-          )
-          .subscribe({
-            next: (asset: SourceAssetResponseDto) => {
-              if (asset && asset.id) {
-                this.processReferenceInput(asset);
-              }
-            },
-            error: err => {
-              handleErrorSnackbar(this.snackBar, err, 'Upload reference image');
-            },
-          });
-      }
+      if (!file.type.startsWith('image/')) continue;
+      availableSlots--;
+      this.uploadingReferenceCount++;
+      this.sourceAssetService
+        .uploadAsset(file, {assetType: AssetTypeEnum.GENERIC_IMAGE})
+        .pipe(
+          finalize(
+            () =>
+              (this.uploadingReferenceCount = Math.max(
+                0,
+                this.uploadingReferenceCount - 1,
+              )),
+          ),
+        )
+        .subscribe({
+          next: (asset: SourceAssetResponseDto) => {
+            if (asset?.id) this.processReferenceInput(asset);
+          },
+          error: err =>
+            handleErrorSnackbar(this.snackBar, err, 'Upload reference image'),
+        });
     }
   }
 
@@ -568,52 +560,155 @@ export class AudioComponent implements OnInit {
       return;
     }
 
-    const isGalleryImage = !('gcsUri' in result);
     let previewUrl: string | null = null;
     let sourceAssetId: number | undefined;
     let sourceMediaItem: SourceMediaItemLink | undefined;
 
-    if (isGalleryImage) {
-      const selection = result as MediaItemSelection;
+    if (!('gcsUri' in result)) {
       previewUrl =
-        selection.mediaItem.presignedUrls?.[selection.selectedIndex || 0] ||
-        null;
+        result.mediaItem.presignedUrls?.[result.selectedIndex || 0] || null;
       sourceMediaItem = {
-        mediaItemId: selection.mediaItem.id,
-        mediaIndex: selection.selectedIndex,
+        mediaItemId: result.mediaItem.id,
+        mediaIndex: result.selectedIndex,
         role: 'input',
       };
     } else {
-      const asset = result as SourceAssetResponseDto;
-      previewUrl = asset.presignedUrl || null;
-      sourceAssetId = asset.id;
+      previewUrl = result.presignedUrl || null;
+      sourceAssetId = result.id;
     }
-
     if (!previewUrl) return;
 
-    const isDuplicate = this.referenceImages.some(img => {
-      if (sourceAssetId && img.sourceAssetId === sourceAssetId) return true;
-      if (
-        sourceMediaItem &&
-        img.sourceMediaItem &&
-        img.sourceMediaItem.mediaItemId === sourceMediaItem.mediaItemId &&
-        img.sourceMediaItem.mediaIndex === sourceMediaItem.mediaIndex
-      ) {
-        return true;
-      }
-      return false;
-    });
-
+    const isDuplicate = this.referenceImages.some(
+      img =>
+        Boolean(sourceAssetId && img.sourceAssetId === sourceAssetId) ||
+        Boolean(
+          sourceMediaItem &&
+            img.sourceMediaItem?.mediaItemId === sourceMediaItem.mediaItemId &&
+            img.sourceMediaItem?.mediaIndex === sourceMediaItem.mediaIndex,
+        ),
+    );
     if (isDuplicate) {
       handleInfoSnackbar(this.snackBar, 'This image is already selected.');
       return;
     }
 
-    this.referenceImages.push({
-      previewUrl,
-      sourceAssetId,
-      sourceMediaItem,
+    this.referenceImages.push({previewUrl, sourceAssetId, sourceMediaItem});
+  }
+
+  openAudioSelectorForReference(): void {
+    if (this.selectedModel !== 'lyria') return;
+
+    const dialogRef = this.dialog.open(ImageSelectorComponent, {
+      width: '90vw',
+      height: '80vh',
+      maxWidth: '90vw',
+      data: {mimeType: 'audio/*', multiSelect: false},
+      panelClass: 'image-selector-dialog',
     });
+
+    dialogRef.afterClosed().subscribe((result: any) => {
+      if (!result || this.selectedModel !== 'lyria') return;
+      const res = Array.isArray(result) ? result[0] : result;
+      if (!res) return;
+
+      if ('gcsUri' in res) {
+        this.referenceAudio = {
+          id: res.id,
+          type: 'source_asset',
+          name:
+            res.originalFilename ||
+            res.titles?.[0] ||
+            res.name ||
+            'Audio Reference',
+          index: 0,
+        };
+      } else if (res.mediaItem?.id) {
+        const index = res.selectedIndex ?? 0;
+        this.referenceAudio = {
+          id: res.mediaItem.id,
+          type: 'media_item',
+          name:
+            res.mediaItem.titles?.[index] ||
+            res.mediaItem.titles?.[0] ||
+            res.mediaItem.prompt ||
+            'Audio Reference',
+          index,
+        };
+      }
+    });
+  }
+
+  onReferenceAudioDrop(event: DragEvent): void {
+    event.preventDefault();
+    if (this.selectedModel !== 'lyria') return;
+
+    const dt = event.dataTransfer;
+    const file =
+      dt?.files?.[0] ??
+      (dt?.items
+        ? (Array.from(dt.items)
+            .find(item => item.kind === 'file')
+            ?.getAsFile() ?? null)
+        : null);
+    if (!file) return;
+
+    const normalizedFile = this.normalizeDroppedAudioFile(file);
+    if (!normalizedFile) {
+      handleInfoSnackbar(
+        this.snackBar,
+        'Please drop a supported audio file (MP3, WAV, OGG, or WEBM).',
+      );
+      return;
+    }
+
+    this.uploadingReferenceCount++;
+    this.sourceAssetService
+      .uploadAsset(normalizedFile)
+      .pipe(
+        finalize(
+          () =>
+            (this.uploadingReferenceCount = Math.max(
+              0,
+              this.uploadingReferenceCount - 1,
+            )),
+        ),
+      )
+      .subscribe({
+        next: (asset: SourceAssetResponseDto) => {
+          if (asset?.id && this.selectedModel === 'lyria') {
+            this.referenceAudio = {
+              id: asset.id,
+              type: 'source_asset',
+              name:
+                asset.originalFilename ||
+                asset.titles?.[0] ||
+                normalizedFile.name ||
+                'Audio Reference',
+              index: 0,
+            };
+          }
+        },
+        error: err =>
+          handleErrorSnackbar(this.snackBar, err, 'Upload reference audio'),
+      });
+  }
+
+  clearReferenceAudio(event: Event): void {
+    event.stopPropagation();
+    this.referenceAudio = null;
+  }
+
+  private normalizeDroppedAudioFile(file: File): File | null {
+    const rawType = (file.type || '').trim().toLowerCase();
+    const ext =
+      /\.([a-z0-9]+)$/i.exec(file.name || '')?.[1].toLowerCase() ?? '';
+    const mime = rawType
+      ? SUPPORTED_AUDIO_MIMES[rawType]
+      : AUDIO_EXT_MIMES[ext];
+    if (!mime) return null;
+    return mime === file.type
+      ? file
+      : new File([file], file.name, {type: mime});
   }
 
   onVoiceSelectionChange(value: string) {
@@ -621,7 +716,7 @@ export class AudioComponent implements OnInit {
       this.openAddVoiceDialog();
       return;
     }
-    this.selectedVoice = value;
+    this.selectedVoice.set(value);
     this.saveState();
   }
 
@@ -633,12 +728,12 @@ export class AudioComponent implements OnInit {
     dialogRef.afterClosed().subscribe(result => {
       if (result) {
         const newVoice: VoiceOption = {
-          id: `custom-${Date.now()}`, // In real app, this ID comes from backend
+          id: `custom-${Date.now()}`,
           name: result.name,
           type: 'custom',
         };
-        this.voices = [newVoice, ...this.voices];
-        this.selectedVoice = newVoice.id;
+        this.voices.update(v => [newVoice, ...v]);
+        this.selectedVoice.set(newVoice.id);
         this.saveState();
         handleSuccessSnackbar(this.snackBar, 'Voice cloned successfully!');
       }
@@ -650,7 +745,7 @@ export class AudioComponent implements OnInit {
     if (this.uploadingReferenceCount > 0) {
       handleInfoSnackbar(
         this.snackBar,
-        'Please wait for reference images to finish uploading.',
+        'Please wait for reference files to finish uploading.',
       );
       return;
     }
@@ -676,58 +771,47 @@ export class AudioComponent implements OnInit {
       return;
     }
 
-    // 1. Determine specific backend model based on UI selection
-    let backendModel: GenerationModelEnum;
-
-    if (this.selectedModel === 'lyria') {
-      backendModel = this.lyriaModel as GenerationModelEnum;
-    } else if (this.selectedModel === 'chirp') {
-      backendModel = GenerationModelEnum.CHIRP_3;
-    } else {
-      backendModel = (this.ttsModel ||
-        GenerationModelEnum.GEMINI_2_5_FLASH_TTS) as GenerationModelEnum;
-    }
+    const isLyria = this.selectedModel === 'lyria';
+    const backendModel = (
+      isLyria
+        ? this.lyriaModel
+        : this.selectedModel === 'chirp'
+          ? GenerationModelEnum.CHIRP_3
+          : this.ttsModel() || GenerationModelEnum.GEMINI_2_5_FLASH_TTS
+    ) as GenerationModelEnum;
 
     const sourceAssetIds: number[] = [];
     const sourceMediaItems: SourceMediaItemLink[] = [];
-    if (this.selectedModel === 'lyria' && this.lyriaMaxReferenceImages > 0) {
-      this.referenceImages.forEach(img => {
-        if (img.sourceMediaItem) {
-          sourceMediaItems.push(img.sourceMediaItem);
-        } else if (img.sourceAssetId) {
-          sourceAssetIds.push(img.sourceAssetId);
-        }
-      });
+    if (isLyria && this.lyriaMaxReferenceImages > 0) {
+      for (const img of this.referenceImages) {
+        if (img.sourceMediaItem) sourceMediaItems.push(img.sourceMediaItem);
+        else if (img.sourceAssetId) sourceAssetIds.push(img.sourceAssetId);
+      }
     }
 
-    // 2. Construct the generic DTO
     const request: CreateAudioDto = {
       model: backendModel,
       prompt: this.prompt,
       workspaceId: activeWorkspaceId,
-      // Optional fields (backend ignores them if not relevant to the specific model)
-      negativePrompt:
-        this.selectedModel === 'lyria' ? this.negativePrompt : undefined,
+      negativePrompt: isLyria ? this.negativePrompt : undefined,
       seed:
-        this.selectedModel === 'lyria' &&
-        this.lyriaSupportsSeed &&
-        this.seed !== null &&
-        this.seed !== undefined
-          ? this.seed
+        isLyria && this.lyriaSupportsSeed
+          ? (this.seed ?? undefined)
           : undefined,
       sampleCount: this.sampleCount,
-      enhancePrompt:
-        this.selectedModel === 'lyria' ? this.enhancePrompt : false,
+      enhancePrompt: isLyria ? this.enhancePrompt : false,
       sourceAssetIds: sourceAssetIds.length ? sourceAssetIds : undefined,
       sourceMediaItems: sourceMediaItems.length ? sourceMediaItems : undefined,
-      languageCode:
-        this.selectedModel !== 'lyria'
-          ? (this.selectedLanguage as LanguageEnum)
+      referenceAudio:
+        isLyria && this.referenceAudio
+          ? {
+              id: this.referenceAudio.id,
+              type: this.referenceAudio.type,
+              index: this.referenceAudio.index,
+            }
           : undefined,
-      voiceName:
-        this.selectedModel !== 'lyria'
-          ? (this.selectedVoice as VoiceEnum)
-          : undefined,
+      languageCode: !isLyria ? this.selectedLanguage() : undefined,
+      voiceName: !isLyria ? (this.selectedVoice() as VoiceEnum) : undefined,
     };
 
     this.saveState();
@@ -744,17 +828,16 @@ export class AudioComponent implements OnInit {
   }
 
   rewritePrompt() {
+    const promptToSend = this.prompt.trim();
     if (
       this.selectedModel !== 'lyria' ||
-      !this.prompt.trim() ||
+      !promptToSend ||
       this.isLoading ||
       this.isRewritingPrompt ||
       this.uploadingReferenceCount > 0
     ) {
       return;
     }
-
-    const promptToSend = this.prompt.trim();
     if (promptToSend.length < 2) {
       handleInfoSnackbar(
         this.snackBar,
@@ -765,25 +848,20 @@ export class AudioComponent implements OnInit {
 
     this.isRewritingPrompt = true;
     this.searchService
-      .rewritePrompt({
-        targetType: 'audio',
-        userPrompt: promptToSend,
-      })
+      .rewritePrompt({targetType: 'audio', userPrompt: promptToSend})
       .pipe(finalize(() => (this.isRewritingPrompt = false)))
       .subscribe({
-        next: (response: {prompt: string}) => {
+        next: ({prompt}) => {
           if (this.selectedModel === 'lyria') {
-            this.prompt = response.prompt;
+            this.prompt = prompt;
             this.saveState();
           }
         },
-        error: error => {
-          handleErrorSnackbar(this.snackBar, error, 'Rewrite prompt');
-        },
+        error: error =>
+          handleErrorSnackbar(this.snackBar, error, 'Rewrite prompt'),
       });
   }
 
-  // --- Result Lightbox Actions ---
   closeErrorOverlay() {
     this.showErrorOverlay = false;
     this.searchService.clearActiveAudioJob();
@@ -793,43 +871,71 @@ export class AudioComponent implements OnInit {
     mediaItem: MediaItem;
     selectedIndex: number;
   }): void {
-    const item = event.mediaItem;
-    if (!item?.id) return;
-
-    const index = event.selectedIndex ?? 0;
-    const remixState = {
-      generationModel: 'gemini-omni',
-      isOmniMode: true,
-      referenceAudio: {
-        id: item.id,
-        type:
-          ((item as unknown as {itemType?: string}).itemType as
-            | 'media_item'
-            | 'source_asset') || 'media_item',
-        index,
-        name: item.titles?.[index] || item.titles?.[0] || 'Audio Reference',
-      },
-    };
-
+    if (!event.mediaItem?.id) return;
+    const remixState = buildOmniRemixState(
+      event.mediaItem as any,
+      event.selectedIndex,
+      true,
+    );
     void this.router.navigate(['/video'], {state: {remixState}});
+  }
+
+  handleIterateAudio(event: {
+    mediaItem: MediaItem;
+    selectedIndex: number;
+  }): void {
+    if (!event.mediaItem?.id) return;
+    const {referenceAudio, lyriaModel} = buildAudioIterationRemixState(
+      event.mediaItem as any,
+      event.selectedIndex,
+    );
+    this.applyAudioIteration(referenceAudio, lyriaModel);
+    handleInfoSnackbar(
+      this.snackBar,
+      `Attached "${referenceAudio.name}" as Audio Ref — describe your next change below.`,
+    );
+  }
+
+  private applyAudioIteration(
+    referenceAudio: AudioReferenceSelection,
+    lyriaModel?: string,
+  ): void {
+    this.selectedModel = 'lyria';
+    if (lyriaModel && this.lyriaModels.some(m => m.value === lyriaModel)) {
+      this.onLyriaModelChange(lyriaModel);
+    }
+    this.referenceAudio = referenceAudio;
+    this.prompt = '';
+    this.seed = undefined;
+    this.saveState();
+    this.focusPromptBox();
+  }
+
+  private focusPromptBox(): void {
+    setTimeout(() => {
+      const textarea =
+        this.promptBoxHost?.nativeElement?.querySelector('textarea');
+      if (!textarea) return;
+      textarea.scrollIntoView?.({behavior: 'smooth', block: 'center'});
+      textarea.focus();
+    }, 0);
   }
 
   deleteGeneratedMedia() {
     this.activeAudioJob$.pipe(first()).subscribe(job => {
-      if (!job?.id) return;
-
       const workspaceId = this.workspaceStateService.getActiveWorkspaceId();
-      if (workspaceId === null) return;
+      if (!job?.id || workspaceId === null) return;
 
-      const dialogRef = this.dialog.open(ConfirmationDialogComponent, {
-        data: {
-          title: 'Delete Audio',
-          message: 'Are you sure you want to delete this generation result?',
-        },
-      });
-
-      dialogRef.afterClosed().subscribe(result => {
-        if (result) {
+      this.dialog
+        .open(ConfirmationDialogComponent, {
+          data: {
+            title: 'Delete Audio',
+            message: 'Are you sure you want to delete this generation result?',
+          },
+        })
+        .afterClosed()
+        .subscribe(result => {
+          if (!result) return;
           this.galleryService
             .bulkDelete([{id: job.id, type: 'media_item'}], workspaceId)
             .subscribe({
@@ -840,12 +946,10 @@ export class AudioComponent implements OnInit {
                 );
                 this.searchService.clearActiveAudioJob();
               },
-              error: err => {
-                handleErrorSnackbar(this.snackBar, err, 'Delete result');
-              },
+              error: err =>
+                handleErrorSnackbar(this.snackBar, err, 'Delete result'),
             });
-        }
-      });
+        });
     });
   }
 }

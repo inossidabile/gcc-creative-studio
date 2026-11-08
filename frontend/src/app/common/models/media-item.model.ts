@@ -16,10 +16,11 @@
 
 import {LanguageEnum, VoiceEnum} from '../../audio/audio.constants';
 import {PaginatedResponse} from './paginated-response.model';
-import {SourceMediaItemLink} from './search.model';
+import {ReferenceAudio, SourceMediaItemLink} from './search.model';
 
 export interface EnrichedSourceAsset {
-  sourceAssetId: string;
+  assetId?: number | string;
+  sourceAssetId?: string;
   presignedUrl: string;
   presignedThumbnailUrl: string;
   gcsUri: string;
@@ -114,15 +115,30 @@ export interface MediaItem {
  * backend (`backend/src/audios/lyria3_text.py`). The frontend renders it
  * as-is and never parses Lyria text itself.
  */
+export interface AudioMusicalProfile {
+  bpm?: number | string;
+  keySignature?: string;
+  timeSignature?: string;
+  vocalProfile?: string;
+  instrumentation: string[];
+  chordProgression?: string;
+  groove?: string;
+}
+
 export interface AudioTrackAnalysis {
   raw_text?: string;
   lyrics?: string;
   structure?: Record<string, any> | any[];
+  musical_profile?: Record<string, any>;
+  waveform?: number[];
+  duration_seconds?: number;
+  seed?: number | null;
   [key: string]: any;
 }
 
 export interface AudioAnalysis {
   tracks?: Array<AudioTrackAnalysis | null>;
+  iteration_steps?: string[];
   [key: string]: any;
 }
 
@@ -132,12 +148,16 @@ export interface SongStructureEntry {
 }
 
 function humanizeStructureKey(key: string): string {
-  if (key.trim().toLowerCase() === 'bpm') {
-    return 'BPM';
-  }
-  return key
-    .replace(/[_-]+/g, ' ')
-    .replace(/\b\w/g, char => char.toUpperCase());
+  return key.trim().toLowerCase() === 'bpm'
+    ? 'BPM'
+    : key.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getStructureRecord(
+  track: AudioTrackAnalysis | null | undefined,
+): Record<string, any> | null {
+  const s = track?.structure;
+  return s && !Array.isArray(s) && typeof s === 'object' ? s : null;
 }
 
 function summarizeStructureSection(section: Record<string, any>): string {
@@ -153,10 +173,7 @@ function summarizeStructureSection(section: Record<string, any>): string {
     section['style'] ||
     section['notes'];
   if (descriptor) parts.push(String(descriptor));
-
-  if (parts.length > 0) {
-    return parts.join(' • ');
-  }
+  if (parts.length > 0) return parts.join(' • ');
 
   const extra = Object.entries(section)
     .filter(
@@ -170,18 +187,96 @@ function summarizeStructureSection(section: Record<string, any>): string {
   return extra.join(' • ') || 'Section';
 }
 
+function resolveAudioAnalysis(item: unknown): AudioAnalysis | null {
+  const src = item as any;
+  const analysis =
+    src?.audioAnalysis ?? src?.audio_analysis ?? src?.metadata?.audio_analysis;
+  return analysis && typeof analysis === 'object' ? analysis : null;
+}
+
 export function getAudioTrackAnalysis(
   item: {audioAnalysis?: AudioAnalysis | null} | null | undefined,
   index = 0,
 ): AudioTrackAnalysis | null {
-  const analysis = item?.audioAnalysis ?? (item as any)?.audio_analysis;
-  if (!analysis || typeof analysis !== 'object') {
-    return null;
+  const tracks = resolveAudioAnalysis(item)?.tracks;
+  return Array.isArray(tracks) ? (tracks[index] ?? null) : null;
+}
+
+export function getAudioTrackWaveform(
+  track: AudioTrackAnalysis | null | undefined,
+): number[] | null {
+  const raw = track?.waveform;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const nums = raw.map(Number);
+  return nums.every(Number.isFinite)
+    ? nums.map(n => Math.min(1, Math.max(0.05, Math.abs(n))))
+    : null;
+}
+
+function parsePositiveSeconds(raw: unknown): number | null {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
   }
-  if (Array.isArray(analysis.tracks)) {
-    return analysis.tracks[index] ?? null;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  const mmss = /^(\d+):([0-5]\d(?:\.\d+)?)$/.exec(trimmed);
+  if (mmss) {
+    const total = Number(mmss[1]) * 60 + Number(mmss[2]);
+    return total > 0 ? total : null;
   }
-  return null;
+  const secMatch = /^(\d+(?:\.\d+)?)\s*s?$/i.exec(trimmed);
+  const val = secMatch ? Number(secMatch[1]) : NaN;
+  return Number.isFinite(val) && val > 0 ? val : null;
+}
+
+export function getAudioTrackDurationSeconds(
+  track: AudioTrackAnalysis | null | undefined,
+  fallbackDurationSeconds?: number | null,
+): number | null {
+  return (
+    parsePositiveSeconds(
+      track?.duration_seconds ?? (track as any)?.durationSeconds,
+    ) ??
+    parsePositiveSeconds(getStructureRecord(track)?.['duration']) ??
+    parsePositiveSeconds(fallbackDurationSeconds)
+  );
+}
+
+export function formatAudioClock(seconds: number, round = false): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const total = round ? Math.max(1, Math.round(seconds)) : Math.floor(seconds);
+  const secs = total % 60;
+  return `${Math.floor(total / 60)}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+export function formatAudioDuration(
+  seconds: number | null | undefined,
+): string | null {
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+    ? formatAudioClock(seconds, true)
+    : null;
+}
+
+function formatBpmCandidate(raw: unknown): string | null {
+  const num =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? Number(/^(\d+(?:\.\d+)?)\s*(?:bpm)?$/i.exec(raw.trim())?.[1])
+        : NaN;
+  return Number.isFinite(num) && num > 0 ? `${Math.round(num)} BPM` : null;
+}
+
+export function getAudioTrackBpm(
+  track: AudioTrackAnalysis | null | undefined,
+): string | null {
+  if (!track) return null;
+  const structure = getStructureRecord(track);
+  return (
+    formatBpmCandidate(structure?.['bpm']) ??
+    formatBpmCandidate(getAudioTrackMusicalProfile(track)?.bpm) ??
+    formatBpmCandidate(structure?.['tempo'])
+  );
 }
 
 export function getAudioTrackLyrics(
@@ -191,27 +286,18 @@ export function getAudioTrackLyrics(
   if (typeof track.lyrics === 'string' && track.lyrics.trim()) {
     return track.lyrics.trim();
   }
-  if (
-    !track.structure &&
+  return !track.structure &&
     typeof track.raw_text === 'string' &&
     track.raw_text.trim()
-  ) {
-    return track.raw_text.trim();
-  }
-  return null;
+    ? track.raw_text.trim()
+    : null;
 }
 
 export function getAudioTrackCaption(
   track: AudioTrackAnalysis | null | undefined,
 ): string | null {
-  const structure = track?.structure;
-  if (structure && !Array.isArray(structure) && typeof structure === 'object') {
-    const caption = structure['caption'];
-    if (typeof caption === 'string' && caption.trim()) {
-      return caption.trim();
-    }
-  }
-  return null;
+  const caption = getStructureRecord(track)?.['caption'];
+  return typeof caption === 'string' && caption.trim() ? caption.trim() : null;
 }
 
 export function formatSongStructureEntries(
@@ -220,70 +306,60 @@ export function formatSongStructureEntries(
   const structure = track?.structure;
   if (!structure) return [];
 
-  if (Array.isArray(structure)) {
-    return structure.map((sec, idx) => {
-      if (typeof sec === 'string') {
-        return {label: `Section ${idx + 1}`, value: sec};
-      }
+  const mapStructureSections = (
+    sections: any[],
+    fallbackPrimitive = false,
+  ): SongStructureEntry[] =>
+    sections.flatMap((sec, idx) => {
+      const defaultLabel = `Section ${idx + 1}`;
+      if (typeof sec === 'string') return [{label: defaultLabel, value: sec}];
       if (sec && typeof sec === 'object') {
         const label = String(
-          sec['name'] || sec['section'] || sec['type'] || `Section ${idx + 1}`,
+          sec['name'] || sec['section'] || sec['type'] || defaultLabel,
         );
-        return {label, value: summarizeStructureSection(sec)};
+        return [{label, value: summarizeStructureSection(sec)}];
       }
-      return {label: `Section ${idx + 1}`, value: String(sec)};
+      return fallbackPrimitive
+        ? [{label: defaultLabel, value: String(sec)}]
+        : [];
     });
+
+  if (Array.isArray(structure)) {
+    return mapStructureSections(structure, true);
   }
+  if (typeof structure !== 'object') return [];
 
-  if (typeof structure === 'object') {
-    const entries: SongStructureEntry[] = [];
-    for (const [key, val] of Object.entries(structure)) {
-      if (
-        key === 'lyrics' ||
-        key === 'sections' ||
-        key === 'caption' ||
-        val === undefined ||
-        val === null ||
-        val === ''
-      ) {
-        continue;
-      }
-      if (
-        typeof val === 'string' ||
-        typeof val === 'number' ||
-        typeof val === 'boolean'
-      ) {
-        entries.push({label: humanizeStructureKey(key), value: String(val)});
-      } else if (Array.isArray(val)) {
-        entries.push({
-          label: humanizeStructureKey(key),
-          value: val
-            .map(v => (typeof v === 'object' ? JSON.stringify(v) : String(v)))
-            .join(', '),
-        });
-      }
+  const entries: SongStructureEntry[] = [];
+  for (const [key, val] of Object.entries(structure)) {
+    if (
+      key === 'lyrics' ||
+      key === 'sections' ||
+      key === 'caption' ||
+      val === undefined ||
+      val === null ||
+      val === ''
+    ) {
+      continue;
     }
-
-    if (Array.isArray(structure['sections'])) {
-      structure['sections'].forEach((sec: any, idx: number) => {
-        if (typeof sec === 'string') {
-          entries.push({label: `Section ${idx + 1}`, value: sec});
-        } else if (sec && typeof sec === 'object') {
-          const label = String(
-            sec['name'] ||
-              sec['section'] ||
-              sec['type'] ||
-              `Section ${idx + 1}`,
-          );
-          entries.push({label, value: summarizeStructureSection(sec)});
-        }
+    if (
+      typeof val === 'string' ||
+      typeof val === 'number' ||
+      typeof val === 'boolean'
+    ) {
+      entries.push({label: humanizeStructureKey(key), value: String(val)});
+    } else if (Array.isArray(val)) {
+      entries.push({
+        label: humanizeStructureKey(key),
+        value: val
+          .map(v => (typeof v === 'object' ? JSON.stringify(v) : String(v)))
+          .join(', '),
       });
     }
-
-    return entries;
   }
-
-  return [];
+  if (Array.isArray(structure['sections'])) {
+    entries.push(...mapStructureSections(structure['sections']));
+  }
+  return entries;
 }
 
 export function formatTrackAnalysisForCopy(
@@ -295,14 +371,157 @@ export function formatTrackAnalysisForCopy(
     parts.push(entries.map(e => `${e.label}: ${e.value}`).join('\n'));
   }
   const caption = getAudioTrackCaption(track);
-  if (caption) {
-    parts.push(`Caption: ${caption}`);
-  }
+  if (caption) parts.push(`Caption: ${caption}`);
   const lyrics = getAudioTrackLyrics(track);
-  if (lyrics) {
-    parts.push(lyrics);
-  }
+  if (lyrics) parts.push(lyrics);
   return parts.join('\n\n');
+}
+
+export function getAudioTrackMusicalProfile(
+  track: AudioTrackAnalysis | null | undefined,
+): AudioMusicalProfile | null {
+  const raw = track?.musical_profile ?? (track as any)?.musicalProfile;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+  const str = (a: string, b?: string): string | undefined => {
+    const val = b ? (raw[a] ?? raw[b]) : raw[a];
+    return typeof val === 'string' && val.trim() ? val.trim() : undefined;
+  };
+  const bpmRaw = raw['bpm'];
+  const profile: AudioMusicalProfile = {
+    bpm: typeof bpmRaw === 'number' && !isNaN(bpmRaw) ? bpmRaw : str('bpm'),
+    keySignature: str('key_signature', 'keySignature'),
+    timeSignature: str('time_signature', 'timeSignature'),
+    vocalProfile: str('vocal_profile', 'vocalProfile'),
+    instrumentation: Array.isArray(raw['instrumentation'])
+      ? raw['instrumentation']
+          .map((item: unknown) =>
+            item !== undefined && item !== null ? String(item).trim() : '',
+          )
+          .filter(Boolean)
+      : [],
+    chordProgression: str('chord_progression', 'chordProgression'),
+    groove: str('groove'),
+  };
+
+  return profile.bpm !== undefined ||
+    profile.instrumentation.length > 0 ||
+    Boolean(
+      profile.keySignature ||
+        profile.timeSignature ||
+        profile.vocalProfile ||
+        profile.chordProgression ||
+        profile.groove,
+    )
+    ? profile
+    : null;
+}
+
+export function formatMusicalProfileEntries(
+  profile: AudioMusicalProfile | null | undefined,
+): SongStructureEntry[] {
+  if (!profile) return [];
+  const pairs: Array<[string, string | number | undefined]> = [
+    ['BPM', profile.bpm],
+    ['Key', profile.keySignature],
+    ['Meter', profile.timeSignature],
+    ['Vocals', profile.vocalProfile],
+  ];
+  return pairs
+    .filter(
+      (p): p is [string, string | number] => p[1] !== undefined && p[1] !== '',
+    )
+    .map(([label, value]) => ({label, value: String(value)}));
+}
+
+export function getAudioIterationSteps(
+  item: {audioAnalysis?: AudioAnalysis | null} | null | undefined,
+): string[] {
+  const analysis = resolveAudioAnalysis(item);
+  const rawSteps =
+    analysis?.iteration_steps ?? (analysis as any)?.iterationSteps;
+  return Array.isArray(rawSteps)
+    ? rawSteps
+        .filter((s: unknown): s is string => typeof s === 'string')
+        .map(s => s.trim())
+        .filter(Boolean)
+    : [];
+}
+
+export function buildAudioIterationRemixState(
+  item: {
+    id: number;
+    itemType?: string;
+    model?: string;
+    titles?: string[];
+    originalPrompt?: string;
+    prompt?: string;
+    presignedUrls?: string[];
+    gcsUris?: string[];
+  },
+  selectedIndex = 0,
+): {lyriaModel?: string; referenceAudio: ReferenceAudio} {
+  const index = selectedIndex ?? 0;
+  const totalTracks = item.presignedUrls?.length || item.gcsUris?.length || 1;
+  const baseName =
+    item.titles?.[index] ||
+    item.titles?.[0] ||
+    item.originalPrompt ||
+    item.prompt ||
+    'Audio Reference';
+  return {
+    lyriaModel: item.model?.startsWith('lyria') ? item.model : undefined,
+    referenceAudio: {
+      id: item.id,
+      type: item.itemType === 'source_asset' ? 'source_asset' : 'media_item',
+      index,
+      name: totalTracks > 1 ? `${baseName} (Track ${index + 1})` : baseName,
+    },
+  };
+}
+
+export function buildOmniRemixState(
+  item: {
+    id: number;
+    itemType?: string;
+    mimeType?: string;
+    titles?: string[];
+    originalPrompt?: string;
+    presignedUrls?: string[];
+    presignedThumbnailUrls?: string[];
+  },
+  selectedIndex = 0,
+  forceAudio = false,
+): Record<string, any> {
+  const index = selectedIndex ?? 0;
+  const type = (item.itemType || 'media_item') as 'media_item' | 'source_asset';
+  const mime = item.mimeType || '';
+  const remixState: Record<string, any> = {
+    generationModel: 'gemini-omni',
+    isOmniMode: true,
+  };
+  if (forceAudio || mime.startsWith('audio/')) {
+    remixState['referenceAudio'] = {
+      id: item.id,
+      type,
+      index,
+      name: item.titles?.[index] || item.titles?.[0] || 'Audio Reference',
+    };
+    return remixState;
+  }
+  if (type === 'media_item' && mime.startsWith('video/')) {
+    remixState['parentMediaItemId'] = item.id;
+    remixState['parentMediaIndex'] = index;
+  }
+  remixState['referenceVideo'] = {
+    id: item.id,
+    type,
+    index,
+    name: item.originalPrompt || `Video Input ${item.id}`,
+    previewUrl:
+      item.presignedThumbnailUrls?.[index] || item.presignedUrls?.[index] || '',
+  };
+  return remixState;
 }
 
 /**

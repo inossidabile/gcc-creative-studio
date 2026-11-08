@@ -378,112 +378,97 @@ describe('MediaDetailComponent', () => {
     });
   });
 
-  describe('audio lyrics & song structure in Details tab', () => {
-    it('renders lyrics and song structure for the active track index', () => {
-      mockGalleryService.getMedia.and.returnValue(
-        of({
-          id: 500,
-          workspaceId: 1,
-          createdAt: '2026-07-08T22:20:10Z',
-          itemType: 'media_item',
-          status: 'COMPLETED',
-          mimeType: 'audio/mpeg',
-          prompt: 'Dream pop ballad',
-          gcsUris: ['gs://b/0.mp3', 'gs://b/1.mp3'],
-          presignedUrls: [
-            'https://example.com/0.mp3',
-            'https://example.com/1.mp3',
+  const loadItem = (
+    overrides: Partial<GalleryItem>,
+    detect = true,
+  ): HTMLElement => {
+    const item = {
+      id: 500,
+      workspaceId: 1,
+      createdAt: '2026-07-08T22:20:10Z',
+      itemType: 'media_item',
+      status: 'COMPLETED',
+      mimeType: 'audio/mpeg',
+      gcsUris: ['gs://b/0.mp3'],
+      presignedUrls: ['https://example.com/0.mp3'],
+      presignedThumbnailUrls: [],
+      metadata: {},
+      ...overrides,
+    } as GalleryItem;
+    mockGalleryService.getMedia.and.returnValue(of(item));
+    component.fetchMediaDetails(item.id, false);
+    if (detect) fixture.detectChanges();
+    return fixture.nativeElement as HTMLElement;
+  };
+
+  describe('audio details & Omni actions', () => {
+    it('does not duplicate Lyrics & Song Structure in the right-hand Details tab (rendered in lightbox)', () => {
+      const host = loadItem({
+        id: 500,
+        prompt: 'Dream pop ballad',
+        gcsUris: ['gs://b/0.mp3', 'gs://b/1.mp3'],
+        presignedUrls: [
+          'https://example.com/0.mp3',
+          'https://example.com/1.mp3',
+        ],
+        audioAnalysis: {
+          tracks: [
+            {
+              raw_text: '[Chorus]\nStarlight fading',
+              lyrics: '[Chorus]\nStarlight fading',
+              structure: {
+                key: 'F major',
+                sections: [{name: 'Chorus', bars: 8}],
+              },
+            },
+            {raw_text: '[Verse]\nSecond take', lyrics: '[Verse]\nSecond take'},
           ],
-          presignedThumbnailUrls: [],
-          audioAnalysis: {
-            tracks: [
-              {
-                raw_text: '[Chorus]\nStarlight fading',
-                lyrics: '[Chorus]\nStarlight fading',
-                structure: {
-                  key: 'F major',
-                  sections: [{name: 'Chorus', bars: 8}],
-                },
-              },
-              {
-                raw_text: '[Verse]\nSecond take',
-                lyrics: '[Verse]\nSecond take',
-              },
-            ],
-          },
-          metadata: {},
-        } as GalleryItem),
-      );
+        },
+      });
 
-      component.fetchMediaDetails(500, false);
-      fixture.detectChanges();
-
-      const host = fixture.nativeElement as HTMLElement;
-      const section = host.querySelector(
-        '[data-testid="track-lyrics-section"]',
+      const lightboxDebug = fixture.debugElement.query(
+        el => el.name === 'app-media-lightbox',
       );
-      expect(section).not.toBeNull();
-      expect(section?.textContent).toContain('Lyrics & Song Structure');
-      expect(section?.textContent).toContain('Key:');
-      expect(section?.textContent).toContain('F major');
-      expect(section?.textContent).toContain('8 bars');
-      expect(section?.textContent).toContain('Starlight fading');
+      const detailsTab = host.querySelector(
+        'mat-tab[label="Details"]',
+      ) as HTMLElement;
+      expect(lightboxDebug).not.toBeNull();
+      expect(
+        lightboxDebug.properties['mediaItem']?.audioAnalysis?.tracks?.[0]
+          ?.lyrics,
+      ).toContain('Starlight fading');
+      expect(detailsTab).not.toBeNull();
+      expect(detailsTab.textContent).toContain('Dream pop ballad');
+      expect(detailsTab.textContent).not.toContain('Starlight fading');
+      expect(detailsTab.textContent).not.toContain('Lyrics');
+      expect(detailsTab.textContent).not.toContain('Song Structure');
+    });
+
+    it('renders seed parameter when seed is 0 and switches per-take seed on slide change', () => {
+      const host = loadItem({
+        id: 501,
+        mimeType: 'audio/wav',
+        prompt: 'Deterministic instrumental',
+        seed: 0,
+        gcsUris: ['gs://b/0.wav', 'gs://b/1.wav'],
+        presignedUrls: [
+          'https://example.com/0.wav',
+          'https://example.com/1.wav',
+        ],
+        audioAnalysis: {tracks: [{seed: 0}, {seed: 1}]},
+      });
+
+      const seedEl = () =>
+        host.querySelector('[data-testid="media-detail-seed"]');
+      expect(seedEl()?.textContent?.trim()).toBe('0');
 
       component.currentImageIndex = 1;
       fixture.detectChanges();
-
-      const updatedSection = host.querySelector(
-        '[data-testid="track-lyrics-section"]',
-      );
-      expect(updatedSection?.textContent).toContain('Second take');
-      expect(updatedSection?.textContent).not.toContain('Starlight fading');
-    });
-
-    it('renders seed parameter when seed is 0', () => {
-      mockGalleryService.getMedia.and.returnValue(
-        of({
-          id: 501,
-          workspaceId: 1,
-          createdAt: '2026-07-08T22:20:10Z',
-          itemType: 'media_item',
-          status: 'COMPLETED',
-          mimeType: 'audio/wav',
-          prompt: 'Deterministic instrumental',
-          seed: 0,
-          gcsUris: ['gs://b/0.wav'],
-          presignedUrls: ['https://example.com/0.wav'],
-          presignedThumbnailUrls: [],
-          metadata: {},
-        } as GalleryItem),
-      );
-
-      component.fetchMediaDetails(501, false);
-      fixture.detectChanges();
-
-      const host = fixture.nativeElement as HTMLElement;
-      expect(host.textContent).toContain('Seed:');
-      expect(host.textContent).toContain('0');
+      expect(seedEl()?.textContent?.trim()).toBe('1');
     });
 
     it('omits parentMediaItemId and uses Audio Reference fallback when sending audio to Omni', () => {
-      mockGalleryService.getMedia.and.returnValue(
-        of({
-          id: 502,
-          workspaceId: 1,
-          createdAt: '2026-07-08T22:20:10Z',
-          itemType: 'media_item',
-          status: 'COMPLETED',
-          mimeType: 'audio/mpeg',
-          originalPrompt: 'image!',
-          prompt: 'image!',
-          gcsUris: ['gs://b/0.mp3'],
-          presignedUrls: ['https://example.com/0.mp3'],
-          presignedThumbnailUrls: [],
-          metadata: {},
-        } as GalleryItem),
-      );
-
-      component.fetchMediaDetails(502, false);
+      loadItem({id: 502, originalPrompt: 'image!', prompt: 'image!'}, false);
       component.handleEditWithOmni({
         mediaItem: component.mediaItem,
         selectedIndex: 0,
@@ -506,23 +491,17 @@ describe('MediaDetailComponent', () => {
     });
 
     it('sets parentMediaItemId only for video media_item and omits it for uploaded video source_asset', () => {
-      mockGalleryService.getMedia.and.returnValue(
-        of({
+      loadItem(
+        {
           id: 601,
-          workspaceId: 1,
-          createdAt: '2026-07-08T22:20:10Z',
-          itemType: 'media_item',
-          status: 'COMPLETED',
           mimeType: 'video/mp4',
           originalPrompt: 'Ocean waves',
           gcsUris: ['gs://b/601.mp4'],
           presignedUrls: ['https://example.com/601.mp4'],
           presignedThumbnailUrls: ['https://example.com/601.jpg'],
-          metadata: {},
-        } as GalleryItem),
+        },
+        false,
       );
-
-      component.fetchMediaDetails(601, false);
       component.handleEditWithOmni({
         mediaItem: component.mediaItem,
         selectedIndex: 0,
@@ -560,11 +539,256 @@ describe('MediaDetailComponent', () => {
       const navArgs = mockRouter.navigate.calls.mostRecent().args[1] as any;
       expect(navArgs.state.remixState.parentMediaItemId).toBeUndefined();
       expect(navArgs.state.remixState.referenceVideo).toEqual(
-        jasmine.objectContaining({
-          id: 602,
-          type: 'source_asset',
-        }),
+        jasmine.objectContaining({id: 602, type: 'source_asset'}),
       );
+    });
+  });
+
+  describe('audio gallery detail enhancements (items 1-4)', () => {
+    it('renders per-take musical profile and updates when currentImageIndex changes', () => {
+      const host = loadItem({
+        id: 700,
+        originalPrompt: ' Indie synthwave track ',
+        gcsUris: ['gs://b/0.mp3', 'gs://b/1.mp3'],
+        presignedUrls: [
+          'https://example.com/0.mp3',
+          'https://example.com/1.mp3',
+        ],
+        audioAnalysis: {
+          tracks: [
+            {
+              musical_profile: {
+                bpm: 118,
+                key_signature: 'A minor',
+                time_signature: '4/4',
+                vocal_profile: 'breathy female alto lead',
+                instrumentation: ['Analog Juno pad', 'Punchy gated snare'],
+                chord_progression: 'Am - F - C - G',
+                groove: 'Driving sixteenth-note arpeggio pulse',
+              },
+            },
+            {
+              musical_profile: {
+                bpm: 124,
+                key_signature: 'D minor',
+                instrumentation: ['Distorted bass'],
+              },
+            },
+          ],
+        },
+      });
+
+      const profileText = () =>
+        host.querySelector('[data-testid="track-musical-profile-section"]')
+          ?.textContent ?? '';
+      for (const expected of [
+        'BPM:',
+        '118',
+        'Key:',
+        'A minor',
+        'Meter:',
+        '4/4',
+        'Vocals:',
+        'breathy female alto lead',
+        'Analog Juno pad',
+        'Punchy gated snare',
+        'Am - F - C - G',
+        'Driving sixteenth-note arpeggio pulse',
+      ]) {
+        expect(profileText()).toContain(expected);
+      }
+
+      component.currentImageIndex = 1;
+      fixture.detectChanges();
+
+      expect(profileText()).toContain('124');
+      expect(profileText()).toContain('D minor');
+      expect(profileText()).toContain('Distorted bass');
+      expect(profileText()).not.toContain('A minor');
+      expect(profileText()).not.toContain('Am - F - C - G');
+    });
+
+    it('keeps musical-profile chip DOM nodes stable across change detection', () => {
+      const host = loadItem({
+        id: 701,
+        audioAnalysis: {
+          tracks: [{musical_profile: {bpm: 118, key_signature: 'A minor'}}],
+        },
+      });
+
+      const chips = () =>
+        Array.from(
+          host.querySelectorAll('[data-testid="musical-profile-chip"]'),
+        );
+      const before = chips();
+      expect(before.length).toBe(2);
+
+      fixture.detectChanges();
+      fixture.detectChanges();
+
+      const after = chips();
+      expect(after.length).toBe(2);
+      after.forEach((chip, i) => expect(chip).toBe(before[i]));
+    });
+
+    it('hides 1-step iteration history on initial tracks and renders numbered steps on iterated tracks', () => {
+      const host = loadItem({
+        id: 701,
+        originalPrompt: 'Warm acoustic folk intro',
+        audioAnalysis: {
+          iteration_steps: ['Warm acoustic folk intro'],
+          tracks: [null],
+        },
+      });
+      expect(
+        host.querySelector('[data-testid="audio-iteration-history-section"]'),
+      ).toBeNull();
+
+      loadItem({
+        id: 702,
+        originalPrompt: 'Add upright bass and brushed snare in chorus',
+        audioAnalysis: {
+          iteration_steps: [
+            'Warm acoustic folk intro',
+            'Add upright bass and brushed snare in chorus',
+          ],
+          tracks: [null],
+        },
+      });
+
+      const historySection = host.querySelector(
+        '[data-testid="audio-iteration-history-section"]',
+      );
+      expect(historySection).not.toBeNull();
+      const items = historySection?.querySelectorAll('li') ?? [];
+      expect(items.length).toBe(2);
+      expect(items[0].textContent).toContain('1');
+      expect(items[0].textContent).toContain('Warm acoustic folk intro');
+      expect(items[1].textContent).toContain('2');
+      expect(items[1].textContent).toContain(
+        'Add upright bass and brushed snare in chorus',
+      );
+    });
+
+    it('separates originalPrompt, synthesizedPrompt, and negativePrompt for non-JSON audio items', () => {
+      const host = loadItem({
+        id: 703,
+        originalPrompt: 'Make the chorus heavier with brass',
+        prompt:
+          '120 BPM cinematic funk.\n[0:00 - 0:15] Verse groove.\n[0:15 - 0:30] Heavy brass chorus.',
+        negativePrompt: 'muddy low-end, clipping',
+      });
+
+      const origBox = host.querySelector('[data-testid="original-prompt-box"]');
+      const synthBox = host.querySelector(
+        '[data-testid="synthesized-prompt-box"]',
+      );
+      const negBox = host.querySelector('[data-testid="negative-prompt-box"]');
+
+      expect(origBox?.textContent).toContain(
+        'Make the chorus heavier with brass',
+      );
+      expect(origBox?.textContent).not.toContain('[0:15 - 0:30]');
+      expect(synthBox?.textContent).toContain(
+        '[0:15 - 0:30] Heavy brass chorus.',
+      );
+      expect(negBox?.textContent).toContain('muddy low-end, clipping');
+    });
+
+    it('renders Audio Ref and Track N badges on referenced assets and resolves assetId or sourceAssetId', () => {
+      const host = loadItem({
+        id: 704,
+        originalPrompt: 'Add strings over uploaded demo',
+        enrichedSourceAssets: [
+          {
+            assetId: 88,
+            gcsUri: 'gs://b/demo.wav',
+            presignedUrl: 'https://example.com/demo.wav',
+            presignedThumbnailUrl: '',
+            role: 'audio_reference',
+            mimeType: 'audio/wav',
+          },
+        ],
+        enrichedSourceMediaItems: [
+          {
+            mediaItemId: 650,
+            mediaIndex: 1,
+            gcsUri: 'gs://b/parent_1.mp3',
+            presignedUrl: 'https://example.com/parent_1.mp3',
+            presignedThumbnailUrl: '',
+            role: 'audio_reference',
+            mimeType: 'audio/mpeg',
+          },
+        ],
+        audioAnalysis: {
+          iteration_steps: ['Add strings over uploaded demo'],
+        },
+      });
+
+      const refSection = host.querySelector(
+        '[data-testid="referenced-assets-section"]',
+      );
+      expect(refSection).not.toBeNull();
+      expect(refSection?.textContent).toContain('Audio Ref');
+      expect(refSection?.textContent).toContain('Track 2');
+      expect(
+        host.querySelector('[data-testid="audio-iteration-history-section"]'),
+      ).not.toBeNull();
+
+      expect(component.getSourceAssetRouteId({assetId: 88})).toBe(88);
+      expect(
+        component.getSourceAssetRouteId({sourceAssetId: 'legacy-99'}),
+      ).toBe('legacy-99');
+    });
+
+    it('hides irrelevant TTS/image default fields on Lyria music items while keeping Voice and Language on TTS items', () => {
+      const host = loadItem({
+        id: 705,
+        model: 'lyria-3-pro-preview',
+        originalPrompt: 'Lush orchestral overture',
+        voiceName: 'Puck',
+        languageCode: 'en-US',
+        aspectRatio: '16:9',
+        resolution: '1080p',
+        googleSearch: null as any,
+        numMedia: 2,
+        generationTime: 14.5,
+      });
+
+      expect(host.textContent).toContain('lyria-3-pro-preview');
+      expect(host.textContent).toContain('Number of Media:');
+      for (const hidden of [
+        'Voice:',
+        'Puck',
+        'Language:',
+        'en-US',
+        'Aspect Ratio:',
+        '16:9',
+        'Resolution:',
+        'Google Search:',
+        'Watermark:',
+      ]) {
+        expect(host.textContent).not.toContain(hidden);
+      }
+
+      loadItem({
+        id: 706,
+        mimeType: 'audio/wav',
+        model: 'chirp_3',
+        originalPrompt: 'Welcome to Creative Studio',
+        voiceName: 'Puck',
+        languageCode: 'en-US',
+        aspectRatio: '16:9',
+        googleSearch: null as any,
+      });
+
+      expect(host.textContent).toContain('Voice:');
+      expect(host.textContent).toContain('Puck');
+      expect(host.textContent).toContain('Language:');
+      expect(host.textContent).toContain('en-US');
+      expect(host.textContent).not.toContain('Aspect Ratio:');
+      expect(host.textContent).not.toContain('Google Search:');
+      expect(host.textContent).not.toContain('Watermark:');
     });
   });
 });

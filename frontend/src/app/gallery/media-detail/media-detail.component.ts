@@ -22,15 +22,17 @@ import {DomSanitizer, SafeHtml} from '@angular/platform-browser';
 import {ActivatedRoute, NavigationExtras, Router} from '@angular/router';
 import {first, Subscription} from 'rxjs';
 import {
+  AudioMusicalProfile,
   AudioTrackAnalysis,
   EnrichedSourceAsset,
   MediaItem,
   SongStructureEntry,
-  formatSongStructureEntries,
-  formatTrackAnalysisForCopy,
+  buildAudioIterationRemixState,
+  buildOmniRemixState,
+  formatMusicalProfileEntries,
+  getAudioIterationSteps,
   getAudioTrackAnalysis,
-  getAudioTrackCaption,
-  getAudioTrackLyrics,
+  getAudioTrackMusicalProfile,
 } from '../../common/models/media-item.model';
 import {GalleryItem} from '../../common/models/gallery-item.model';
 import {CreatePromptMediaDto} from '../../common/models/prompt.model';
@@ -62,6 +64,19 @@ export interface LocationCrumb {
 /** Folder segments shown before the trail collapses the middle into "…". */
 export const MAX_VISIBLE_FOLDER_CRUMBS = 3;
 
+const SOURCE_ROLE_BADGES: Record<string, string> = {
+  start_frame: 'Start Frame',
+  end_frame: 'End Frame',
+  style_reference: 'Style Ref',
+  image_reference_style: 'Style Ref',
+  image_reference_asset: 'Image Ref',
+  video_reference: 'Video Ref',
+  video_extension_source: 'Source Video',
+  concatenation_source: 'Clip Source',
+  youtube_video_reference: 'YouTube Ref',
+  mask: 'Mask',
+};
+
 @Component({
   selector: 'app-media-detail',
   templateUrl: './media-detail.component.html',
@@ -78,6 +93,7 @@ export class MediaDetailComponent implements OnDestroy {
   public currentImageIndex = 0;
   promptJson: any | undefined;
   isPromptExpanded = false;
+  isSynthesizedPromptExpanded = false;
   public isIdentityExpanded = false;
   public selectedAssetForLightbox: GalleryItem | null = null;
   public lightboxInitialIndex = 0;
@@ -127,6 +143,19 @@ export class MediaDetailComponent implements OnDestroy {
 
   trackCrumb(_index: number, crumb: LocationCrumb): number | string {
     return crumb.id ?? 'ellipsis';
+  }
+
+  get isMusicItem(): boolean {
+    return String(this.mediaItem?.model ?? '')
+      .toLowerCase()
+      .startsWith('lyria');
+  }
+
+  get isAudioItem(): boolean {
+    return (
+      Boolean(this.mediaItem?.mimeType?.startsWith('audio/')) ||
+      this.isMusicItem
+    );
   }
 
   get identityFields(): {label: string; value: any; type: string}[] {
@@ -227,35 +256,101 @@ export class MediaDetailComponent implements OnDestroy {
     return getAudioTrackAnalysis(this.mediaItem, this.currentImageIndex);
   }
 
-  get currentTrackLyrics(): string | null {
-    return getAudioTrackLyrics(this.currentTrackAnalysis);
+  get displaySeed(): number | null {
+    const seed = this.currentTrackAnalysis?.seed ?? this.mediaItem?.seed;
+    return typeof seed === 'number' && Number.isFinite(seed) ? seed : null;
   }
 
-  get currentTrackCaption(): string | null {
-    return getAudioTrackCaption(this.currentTrackAnalysis);
+  get currentTrackMusicalProfile(): AudioMusicalProfile | null {
+    return getAudioTrackMusicalProfile(this.currentTrackAnalysis);
   }
 
-  get currentTrackStructureEntries(): SongStructureEntry[] {
-    return formatSongStructureEntries(this.currentTrackAnalysis);
+  get currentTrackMusicalProfileEntries(): SongStructureEntry[] {
+    return formatMusicalProfileEntries(this.currentTrackMusicalProfile);
   }
 
-  get hasCurrentTrackText(): boolean {
+  trackByIndex(index: number): number {
+    return index;
+  }
+
+  get hasAudioReferenceSource(): boolean {
+    return [
+      ...(this.mediaItem?.enrichedSourceAssets ?? []),
+      ...(this.mediaItem?.enrichedSourceMediaItems ?? []),
+    ].some(r => this.isAudioReference(r));
+  }
+
+  get audioIterationSteps(): string[] {
+    const steps = getAudioIterationSteps(this.mediaItem);
+    return steps.length > 1 ||
+      (steps.length === 1 && this.hasAudioReferenceSource)
+      ? steps
+      : [];
+  }
+
+  get displayOriginalPrompt(): string {
     return (
-      Boolean(this.currentTrackLyrics) ||
-      Boolean(this.currentTrackCaption) ||
-      this.currentTrackStructureEntries.length > 0
+      (this.mediaItem?.originalPrompt ?? '').trim() ||
+      (this.mediaItem?.prompt ?? '').trim()
     );
   }
 
-  copyCurrentTrackText(): void {
-    const text = formatTrackAnalysisForCopy(this.currentTrackAnalysis);
-    if (!text) return;
+  get synthesizedPrompt(): string | null {
+    if (this.promptJson) return null;
+    const orig = (this.mediaItem?.originalPrompt ?? '').trim();
+    const full = (this.mediaItem?.prompt ?? '').trim();
+    return orig && full && orig !== full ? full : null;
+  }
+
+  isExpandablePrompt(text: string | null | undefined): boolean {
+    return Boolean(
+      text &&
+        (text.length > 160 ||
+          text.split('\n').length > 4 ||
+          text.split(/\s+/).length > 25),
+    );
+  }
+
+  toggleSynthesizedPromptExpansion(): void {
+    this.isSynthesizedPromptExpanded = !this.isSynthesizedPromptExpanded;
+  }
+
+  copyPromptText(text: string | null | undefined): void {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed) return;
     if (this.clipboard) {
-      this.clipboard.copy(text);
+      this.clipboard.copy(trimmed);
     } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(text);
+      void navigator.clipboard.writeText(trimmed);
     }
     handleSuccessSnackbar(this._snackBar, 'Copied to clipboard!');
+  }
+
+  getSourceAssetRouteId(asset: any): number | string | null {
+    return asset?.assetId ?? asset?.sourceAssetId ?? null;
+  }
+
+  isAudioReference(ref: any): boolean {
+    return (
+      ref?.role === 'audio_reference' ||
+      Boolean(ref?.mimeType?.startsWith('audio/'))
+    );
+  }
+
+  getSourceRoleBadge(ref: any): string {
+    if (this.isAudioReference(ref)) return 'Audio Ref';
+    const mapped = SOURCE_ROLE_BADGES[String(ref?.role || '').toLowerCase()];
+    if (mapped) return mapped;
+    if (ref?.mimeType?.startsWith('video/')) return 'Video Ref';
+    if (ref?.mimeType?.startsWith('image/')) return 'Image Ref';
+    return 'Reference';
+  }
+
+  getSourceTooltip(ref: any): string {
+    const label = this.getSourceRoleBadge(ref);
+    return ref?.mediaIndex !== undefined && ref?.mediaIndex !== null
+      ? `${label} (Track / Variation ${Number(ref.mediaIndex) + 1})`
+      : label;
   }
 
   constructor(
@@ -303,6 +398,8 @@ export class MediaDetailComponent implements OnDestroy {
       next: (data: GalleryItem) => {
         this.mediaItem = data;
         this.isLoading = false;
+        this.isPromptExpanded = false;
+        this.isSynthesizedPromptExpanded = false;
         this.loadingService.hide();
         this.readInitialIndexFromUrl();
         this.parsePrompt();
@@ -538,51 +635,21 @@ export class MediaDetailComponent implements OnDestroy {
   }
 
   handleEditWithOmni(event: {mediaItem: any; selectedIndex: number}): void {
-    if (!this.mediaItem) {
-      return;
-    }
+    if (!this.mediaItem) return;
+    const remixState = buildOmniRemixState(this.mediaItem, event.selectedIndex);
+    void this.router.navigate(['/video'], {state: {remixState}});
+  }
 
-    const index = event.selectedIndex;
-    const mime = this.mediaItem.mimeType || '';
-    const isAudio = mime.startsWith('audio/');
-
-    const remixState: any = {
-      generationModel: 'gemini-omni',
-      isOmniMode: true,
-    };
-
-    if (isAudio) {
-      remixState.referenceAudio = {
-        id: this.mediaItem.id,
-        type: this.mediaItem.itemType || 'media_item',
-        index: index,
-        name:
-          this.mediaItem.titles?.[index] ||
-          this.mediaItem.titles?.[0] ||
-          'Audio Reference',
-      };
-    } else {
-      if ((this.mediaItem.itemType || 'media_item') === 'media_item') {
-        remixState.parentMediaItemId = this.mediaItem.id;
-        remixState.parentMediaIndex = index;
-      }
-      remixState.referenceVideo = {
-        id: this.mediaItem.id,
-        type: this.mediaItem.itemType || 'media_item',
-        index: index,
-        name:
-          this.mediaItem.originalPrompt || `Video Input ${this.mediaItem.id}`,
-        previewUrl:
-          this.mediaItem.presignedThumbnailUrls?.[index] ||
-          this.mediaItem.presignedUrls?.[index] ||
-          '',
-      };
-    }
-
-    const navigationExtras: NavigationExtras = {
-      state: {remixState},
-    };
-    void this.router.navigate(['/video'], navigationExtras);
+  handleIterateAudio(event: {
+    mediaItem: MediaItem;
+    selectedIndex: number;
+  }): void {
+    if (!this.mediaItem) return;
+    const remixState = buildAudioIterationRemixState(
+      this.mediaItem,
+      event.selectedIndex,
+    );
+    void this.router.navigate(['/audio'], {state: {remixState}});
   }
 
   sendToVto(index: number): void {

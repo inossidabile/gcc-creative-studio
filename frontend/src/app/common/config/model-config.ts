@@ -421,6 +421,7 @@ export const MODEL_CONFIGS: GenerationModelConfig[] = [
       supportedAspectRatios: [],
       supportedResolutions: [],
       supportedDurations: [],
+      supportsAudioReference: true,
       supportsSeed: true,
       supportsNegativePrompt: true,
       supportsVoice: false,
@@ -438,6 +439,7 @@ export const MODEL_CONFIGS: GenerationModelConfig[] = [
       supportedAspectRatios: [],
       supportedResolutions: [],
       supportedDurations: [],
+      supportsAudioReference: true,
       supportsSeed: false,
       supportsNegativePrompt: true,
       supportsVoice: false,
@@ -455,6 +457,7 @@ export const MODEL_CONFIGS: GenerationModelConfig[] = [
       supportedAspectRatios: [],
       supportedResolutions: [],
       supportedDurations: [],
+      supportsAudioReference: true,
       supportsSeed: false,
       supportsNegativePrompt: true,
       supportsVoice: false,
@@ -537,21 +540,18 @@ export const ASPECT_RATIO_LABELS: Record<string, string> = {
 
 /**
  * Checks whether a given model identifier or config corresponds to Gemini Omni,
- * which supports Audio as a reference input.
+ * which supports Audio as a reference input for video generation.
  */
 export function isGeminiOmniModel(modelValue?: string | null): boolean {
   if (!modelValue) return false;
   const config = MODEL_CONFIGS.find(
     m => m.value === modelValue || m.viewValue === modelValue,
   );
-  if (config?.capabilities?.supportsAudioReference) {
-    return true;
+  if (config) {
+    return Boolean(
+      config.type === 'VIDEO' && config.capabilities?.supportsAudioReference,
+    );
   }
   const val = modelValue.toLowerCase();
-  return (
-    val === 'gemini-omni-flash-preview' ||
-    val === 'gemini-omni' ||
-    val.includes('gemini-omni') ||
-    val.includes('gemini omni')
-  );
+  return val.includes('gemini-omni') || val.includes('gemini omni');
 }

@@ -53,21 +53,13 @@ def _coerce_lyria3_scalar(value: str) -> int | float | str:
     stripped = value.strip()
     try:
         num = float(stripped)
-        if num.is_integer():
-            return int(num)
-        return num
+        return int(num) if num.is_integer() else num
     except ValueError:
         return stripped
 
 
 def _parse_lyria3_plain_block(block: str) -> tuple[str | None, dict[str, Any]]:
-    """Splits a plain-text Lyria 3 block into ``(lyrics, structure)``.
-
-    Lyria 3's plain-text responses interleave timestamped/tagged lyrics with
-    trailing ``Key: Value`` metadata lines (``Caption: ...``, ``Mosic: 4.5``,
-    ``BPM: 90.0``, etc.). Separating them populates ``structure`` and keeps
-    non-lyric metadata out of ``lyrics``.
-    """
+    """Splits a plain-text Lyria 3 block into ``(lyrics, structure)``."""
     lyrics_lines: list[str] = []
     structure: dict[str, Any] = {}
     in_multiline_caption = False
@@ -104,45 +96,34 @@ def _parse_lyria3_plain_block(block: str) -> tuple[str | None, dict[str, Any]]:
     return (cleaned_lyrics or None), structure
 
 
+def _collect_text_items(items: Any) -> list[str]:
+    """Collects non-empty ``type == 'text'`` strings from an interaction item sequence."""
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return []
+    return [
+        text_val.strip()
+        for item in items
+        if _get_attr_or_key(item, "type") == "text"
+        and isinstance((text_val := _get_attr_or_key(item, "text")), str)
+        and text_val.strip()
+    ]
+
+
 def _extract_lyria3_text(interaction: Any) -> dict[str, Any] | None:
-    """Extracts lyrics and/or song structure text from a Lyria 3 ``Interaction``.
-
-    Lyria 3 returns interleaved text blocks alongside audio (plain/tagged lyrics
-    plus ``Caption`` / ``BPM`` / ``Mosic`` metadata lines, or a JSON description
-    of song structure) via ``steps[].content[]``, raw ``outputs[]``, or the
-    SDK's ``output_text`` convenience property. Returns ``None`` when no
-    non-empty text blocks are present.
-    """
+    """Extracts lyrics and/or song structure text from a Lyria 3 ``Interaction``."""
     blocks: list[str] = []
-
     steps = _get_attr_or_key(interaction, "steps")
     if isinstance(steps, Sequence) and not isinstance(steps, (str, bytes)):
         for step in steps:
             step_type = _get_attr_or_key(step, "type")
             if isinstance(step_type, str) and step_type != "model_output":
                 continue
-            content = _get_attr_or_key(step, "content")
-            if isinstance(content, Sequence) and not isinstance(
-                content, (str, bytes)
-            ):
-                for item in content:
-                    if _get_attr_or_key(item, "type") != "text":
-                        continue
-                    text_val = _get_attr_or_key(item, "text")
-                    if isinstance(text_val, str) and text_val.strip():
-                        blocks.append(text_val.strip())
+            blocks.extend(
+                _collect_text_items(_get_attr_or_key(step, "content"))
+            )
 
     if not blocks:
-        outputs = _get_attr_or_key(interaction, "outputs")
-        if isinstance(outputs, Sequence) and not isinstance(
-            outputs, (str, bytes)
-        ):
-            for item in outputs:
-                if _get_attr_or_key(item, "type") != "text":
-                    continue
-                text_val = _get_attr_or_key(item, "text")
-                if isinstance(text_val, str) and text_val.strip():
-                    blocks.append(text_val.strip())
+        blocks = _collect_text_items(_get_attr_or_key(interaction, "outputs"))
 
     if not blocks:
         output_text = _get_attr_or_key(interaction, "output_text")
@@ -169,19 +150,21 @@ def _extract_lyria3_text(interaction: Any) -> dict[str, Any] | None:
             if isinstance(inline_lyrics, str) and inline_lyrics.strip():
                 lyrics_parts.append(inline_lyrics.strip())
             elif isinstance(parsed_json.get("sections"), list):
-                section_lyrics: list[str] = []
-                for sec in parsed_json["sections"]:
-                    if not isinstance(sec, dict):
-                        continue
-                    sec_text = sec.get("lyrics")
-                    if isinstance(sec_text, str) and sec_text.strip():
-                        sec_label = sec.get("name") or sec.get("section")
-                        if isinstance(sec_label, str) and sec_label.strip():
-                            section_lyrics.append(
-                                f"[{sec_label.strip()}]\n{sec_text.strip()}"
-                            )
-                        else:
-                            section_lyrics.append(sec_text.strip())
+                section_lyrics = [
+                    (
+                        f"[{label.strip()}]\n{sec_text.strip()}"
+                        if isinstance(
+                            (label := sec.get("name") or sec.get("section")),
+                            str,
+                        )
+                        and label.strip()
+                        else sec_text.strip()
+                    )
+                    for sec in parsed_json["sections"]
+                    if isinstance(sec, dict)
+                    and isinstance((sec_text := sec.get("lyrics")), str)
+                    and sec_text.strip()
+                ]
                 if section_lyrics:
                     lyrics_parts.append("\n\n".join(section_lyrics))
         elif isinstance(parsed_json, list):

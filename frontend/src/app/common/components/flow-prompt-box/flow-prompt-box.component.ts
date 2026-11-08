@@ -31,7 +31,10 @@ import {
 } from '@angular/core';
 import {MatSnackBar} from '@angular/material/snack-bar';
 import {ReferenceImage} from '../../models/search.model';
-import {GenerationModelConfig} from '../../config/model-config';
+import {
+  GenerationModelConfig,
+  isGeminiOmniModel,
+} from '../../config/model-config';
 import {MatIconModule} from '@angular/material/icon';
 import {CommonModule} from '@angular/common';
 import {FormsModule} from '@angular/forms';
@@ -99,6 +102,14 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   }
   get allowReferenceImages(): boolean {
     return this.allowReferenceImagesSignal();
+  }
+
+  private allowReferenceAudioSignal = signal<boolean>(false);
+  @Input() set allowReferenceAudio(val: boolean) {
+    this.allowReferenceAudioSignal.set(val);
+  }
+  get allowReferenceAudio(): boolean {
+    return this.allowReferenceAudioSignal();
   }
 
   // --- setter inputs ---
@@ -175,6 +186,7 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   @Output() openVideoSelectorForReference = new EventEmitter<void>();
   @Output() clearReferenceVideo = new EventEmitter<Event>();
   @Output() openAudioSelectorForReference = new EventEmitter<void>();
+  @Output() onReferenceAudioDrop = new EventEmitter<DragEvent>();
   @Output() clearReferenceAudio = new EventEmitter<Event>();
   @Output() openVideoUrlInputForReference = new EventEmitter<void>();
   @Output() clearExternalUrl = new EventEmitter<void>();
@@ -268,53 +280,42 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   isTextToVideo = computed(() => this.selectedMode() === 'Text to Video');
   isVideoToImage = computed(() => this.selectedMode() === 'Video to Image');
   isImageMode = computed(() => this.selectedMode().includes('Image'));
-  isAudioMode = computed(() => {
-    const modeLower = this.selectedMode().toLowerCase();
-    return (
-      modeLower.includes('audio') ||
-      modeLower.includes('music') ||
-      modeLower.includes('speech')
-    );
-  });
+  isAudioMode = computed(() => /audio|music|speech/i.test(this.selectedMode()));
   effectivePlaceholder = computed(() => {
-    if (this.placeholderSignal()) {
-      return this.placeholderSignal();
-    }
-    if (this.isConcatenateVideo()) {
-      return 'Prompt not needed for concatenation';
-    }
-    if (this.isImageMode()) {
-      return 'Generate an image with text...';
-    }
-    if (this.isAudioMode()) {
-      return 'Describe the audio to generate...';
-    }
+    if (this.placeholderSignal()) return this.placeholderSignal();
+    if (this.isConcatenateVideo()) return 'Prompt not needed for concatenation';
+    if (this.isImageMode()) return 'Generate an image with text...';
+    if (this.isAudioMode()) return 'Describe the audio to generate...';
     return 'Generate a video with text...';
   });
   canEditImgSlot = computed(
     () => !this.isExtendVideo() && !this.isConcatenateVideo(),
   );
   hasAspectRatioOptions = computed(() => {
-    if (!this.showAspectRatioSignal()) {
-      return false;
-    }
+    if (!this.showAspectRatioSignal()) return false;
     const model = this.getSelectedModelObject();
-    if (model) {
-      return (model.capabilities?.supportedAspectRatios ?? []).length > 0;
-    }
-    return true;
+    return model
+      ? (model.capabilities?.supportedAspectRatios ?? []).length > 0
+      : true;
   });
   canShowReferenceImages = computed(() => {
-    const model = this.getSelectedModelObject();
-    if (!model || (model.capabilities?.maxReferenceImages ?? 0) <= 0) {
-      return false;
-    }
+    const maxRefs =
+      this.getSelectedModelObject()?.capabilities?.maxReferenceImages ?? 0;
     return (
-      this.isIngredientsToVideo() ||
-      this.isIngredientsToImage() ||
-      this.allowReferenceImagesSignal()
+      maxRefs > 0 &&
+      (this.isIngredientsToVideo() ||
+        this.isIngredientsToImage() ||
+        this.allowReferenceImagesSignal())
     );
   });
+  canShowReferenceAudio = computed(
+    () =>
+      (this.isIngredientsToVideo() && this.isOmniModel()) ||
+      (this.allowReferenceAudioSignal() &&
+        Boolean(
+          this.getSelectedModelObject()?.capabilities?.supportsAudioReference,
+        )),
+  );
   hasResolutionOptions = computed(() => this.supportedResolutions().length > 0);
   hasDurationOptions = computed(
     () =>
@@ -346,6 +347,19 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   onPromptInput(event: Event) {
     const target = event.target as HTMLTextAreaElement;
     this.promptChanged.emit(target.value);
+  }
+
+  /**
+   * Handles Ctrl+Enter inside the prompt and stops it here: Home and Video
+   * also listen for Ctrl+Enter on `window`, so a bubbling event would start a
+   * second generation.
+   */
+  onPromptCtrlEnter(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!this.isLoading && !this.isConcatenateVideo()) {
+      this.generateClicked.emit();
+    }
   }
 
   onEditOverlayClick(num?: NumPos, index?: number, ref?: ReferenceImage): void {
@@ -468,13 +482,7 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   }
 
   isOmniModel(model?: any): boolean {
-    const activeModel = model || this.getSelectedModelObject();
-    const val = activeModel?.value;
-    return (
-      val === 'gemini-omni-flash-preview' ||
-      val === 'gemini-omni-1.1-flash-preview' ||
-      val === 'gemini-omni'
-    );
+    return isGeminiOmniModel((model || this.getSelectedModelObject())?.value);
   }
 
   getSelectedModelResolutions(model?: any): ('1K' | '2K' | '4K')[] {

@@ -188,6 +188,7 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   @Output() openAudioSelectorForReference = new EventEmitter<void>();
   @Output() onReferenceAudioDrop = new EventEmitter<DragEvent>();
   @Output() clearReferenceAudio = new EventEmitter<Event>();
+  @Output() stemReferenceAudio = new EventEmitter<Event>();
   @Output() openVideoUrlInputForReference = new EventEmitter<void>();
   @Output() clearExternalUrl = new EventEmitter<void>();
 
@@ -197,6 +198,7 @@ export class FlowPromptBoxComponent implements OnInit, OnDestroy {
   @Input() referenceImagesType: 'ASSET' | 'STYLE' = 'ASSET';
   @Input() referenceVideo: any | null = null;
   @Input() referenceAudio: any | null = null;
+  @Input() canStemReferenceAudio = false;
   private _externalUrl: string | null = null;
   private externalUrlSignal = signal<string | null>(null);
   @Input() set externalUrl(val: string | null) {

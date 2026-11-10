@@ -32,6 +32,7 @@ import {
   AudioTrackAnalysis,
   MediaItem,
   SongStructureEntry,
+  buildAudioIterationRemixState,
   formatAudioClock,
   formatSongStructureEntries,
   formatTrackAnalysisForCopy,
@@ -57,6 +58,11 @@ import {TagsService} from '../../services/tags.service';
 import {WorkspaceStateService} from '../../../services/workspace/workspace-state.service';
 import {MoveToFolderDialogComponent} from '../move-to-folder-dialog/move-to-folder-dialog.component';
 import {FolderService} from '../../services/folder.service';
+import {
+  AudioStemMixerDialogComponent,
+  AudioStemMixerDialogData,
+  AudioStemMixerDialogResult,
+} from '../audio-stem-mixer-dialog/audio-stem-mixer-dialog.component';
 
 @Component({
   selector: 'app-media-lightbox',
@@ -75,6 +81,7 @@ export class MediaLightboxComponent
   @Input() showMoveButton = false;
   @Input() showOmni = true;
   @Input() showIterateAudio = true;
+  @Input() showStemAudio = true;
 
   get isImage(): boolean {
     return this.mediaItem?.mimeType?.startsWith('image/') ?? false;
@@ -105,6 +112,8 @@ export class MediaLightboxComponent
     mediaItem: MediaItem;
     selectedIndex: number;
   }>();
+  @Output() stemmedMediaCreated =
+    new EventEmitter<AudioStemMixerDialogResult>();
   @Output() extendWithAiClicked = new EventEmitter<{
     mediaItem: MediaItem;
     selectedIndex: number;
@@ -829,6 +838,65 @@ export class MediaLightboxComponent
         selectedIndex: this.selectedIndex,
       });
     }
+  }
+
+  onStemAudioClick(): void {
+    if (!this.mediaItem?.id) return;
+    const workspaceId = this.workspaceStateService.getActiveWorkspaceId();
+    if (!workspaceId) return;
+
+    const audio = this.audioPlayerRef?.nativeElement;
+    if (audio && !audio.paused) {
+      audio.pause();
+      this.onAudioPause();
+    }
+
+    const rawItem = this.mediaItem as any;
+    const isSourceAsset = rawItem.itemType === 'source_asset';
+    const sourceTitle =
+      this.mediaItem.titles?.[this.selectedIndex] ||
+      this.mediaItem.titles?.[0] ||
+      rawItem.originalFilename ||
+      this.mediaItem.prompt ||
+      undefined;
+
+    const dialogRef = this.dialog.open<
+      AudioStemMixerDialogComponent,
+      AudioStemMixerDialogData,
+      AudioStemMixerDialogResult
+    >(AudioStemMixerDialogComponent, {
+      width: '680px',
+      maxWidth: '95vw',
+      panelClass: 'stem-mixer-dialog-panel',
+      data: {
+        workspaceId,
+        source: isSourceAsset
+          ? {id: this.mediaItem.id, type: 'source_asset'}
+          : {
+              id: this.mediaItem.id,
+              type: 'media_item',
+              index: this.selectedIndex,
+            },
+        sourceTitle,
+        folderId: this.mediaItem.folderId ?? null,
+        allowUseAsReference: true,
+      },
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (!result) return;
+      if (this.stemmedMediaCreated.observed) {
+        this.stemmedMediaCreated.emit(result);
+        return;
+      }
+      if (result.action === 'use_as_reference') {
+        const remixState = buildAudioIterationRemixState(result.mediaItem, 0);
+        void this.router.navigate(['/audio'], {state: {remixState}});
+      } else {
+        handleSuccessSnackbar(this.snackBar, 'Stem mix saved to Gallery!');
+        void this.router.navigate(['/gallery', result.mediaItem.id]);
+      }
+    });
   }
 
   onExtendWithAiClick() {

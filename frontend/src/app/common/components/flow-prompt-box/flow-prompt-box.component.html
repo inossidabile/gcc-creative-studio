@@ -315,7 +315,11 @@
         <div
           *ngIf="canShowReferenceAudio()"
           class="relative h-20 w-20 cursor-pointer rounded-xl border-2 border-dashed border-neutral-700 bg-neutral-800 transition-colors hover:border-neutral-500 hover:bg-neutral-700 flex flex-col items-center justify-center"
-          (click)="!referenceAudio && openAudioSelectorForReference.emit()"
+          (click)="
+            !referenceAudio
+              ? openAudioSelectorForReference.emit()
+              : canStemReferenceAudio && stemReferenceAudio.emit($event)
+          "
           (dragover)="$event.preventDefault()"
           (drop)="$event.preventDefault(); onReferenceAudioDrop.emit($event)"
           [matTooltip]="referenceAudio?.name || ''"
@@ -336,6 +340,19 @@
               >{{ referenceAudio.name || 'Audio' }}</span
             >
             <button
+              *ngIf="canStemReferenceAudio"
+              type="button"
+              aria-label="Isolate instrument stems"
+              matTooltip="Isolate instrument stems"
+              (click)="
+                $event.stopPropagation(); stemReferenceAudio.emit($event)
+              "
+              class="stem-ref-audio-btn absolute -left-2 -top-2 rounded-full bg-blue-600/90 p-0.5 text-white shadow hover:bg-blue-500"
+            >
+              <mat-icon class="!h-4 !w-4 text-sm">graphic_eq</mat-icon>
+            </button>
+            <button
+              type="button"
               (click)="
                 $event.stopPropagation(); clearReferenceAudio.emit($event)
               "

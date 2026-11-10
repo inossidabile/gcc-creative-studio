@@ -125,6 +125,7 @@ import {TransitionIndicatorComponent} from './workbench/components/transition-in
 import {AudioClipInspectorComponent} from './workbench/components/audio-clip-inspector/audio-clip-inspector.component';
 import {ApprovalGateComponent} from './workbench/components/approval-gate/approval-gate.component';
 import {FeedbackFabComponent} from './common/components/feedback-fab/feedback-fab.component';
+import {AudioStemMixerDialogComponent} from './common/components/audio-stem-mixer-dialog/audio-stem-mixer-dialog.component';
 import {SafeUrlPipe} from './common/pipes/safe-url.pipe';
 
 @NgModule({
@@ -215,6 +216,7 @@ import {SafeUrlPipe} from './common/pipes/safe-url.pipe';
     TransitionIndicatorComponent,
     AudioClipInspectorComponent,
     ApprovalGateComponent,
+    AudioStemMixerDialogComponent,
     TextFieldModule,
     SafeUrlPipe,
   ],

@@ -79,6 +79,7 @@
             [showSeeMoreInfoButton]="true"
             [showDeleteButton]="true"
             (iterateAudioClicked)="handleIterateAudio($event)"
+            (stemmedMediaCreated)="handleStemmedMediaCreated($event)"
             (editWithOmniClicked)="handleEditWithOmni($event)"
             (deleteClicked)="deleteGeneratedMedia()"
           ></app-media-lightbox>
@@ -286,6 +287,7 @@
           [showRewrite]="selectedModel === 'lyria'"
           [allowReferenceImages]="selectedModel === 'lyria'"
           [allowReferenceAudio]="selectedModel === 'lyria'"
+          [canStemReferenceAudio]="selectedModel === 'lyria'"
           [canEditReferenceImages]="false"
           [referenceImages]="referenceImages"
           [referenceAudio]="referenceAudio"
@@ -299,6 +301,7 @@
           (openAudioSelectorForReference)="openAudioSelectorForReference()"
           (onReferenceAudioDrop)="onReferenceAudioDrop($event)"
           (clearReferenceAudio)="clearReferenceAudio($event)"
+          (stemReferenceAudio)="openStemMixerForReference($event)"
           (rewriteClicked)="rewritePrompt()"
           (generateClicked)="generate()"
         >

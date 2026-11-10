@@ -51,6 +51,40 @@ steps:
       - '${_GCP_REGION}'
       - '--quiet' # Suppress interactive prompts for CI/CD environments
 
+  # Step 4: Create or update the audio stem separation Cloud Run Job (4 vCPU / 8 GiB)
+  # reusing the backend service account and GENMEDIA_BUCKET without Terraform changes.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'DeployStemJob'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        SVC_JSON=$$(gcloud run services describe "${_SERVICE_NAME}" \
+          --region="${_GCP_REGION}" \
+          --format="json" 2>/dev/null || echo "{}")
+        RUN_SA=$$(printf '%s' "$$SVC_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('spec',{}).get('template',{}).get('spec',{}).get('serviceAccountName','') or d.get('template',{}).get('serviceAccount',''))" 2>/dev/null || true)
+        GENMEDIA_BUCKET=$$(printf '%s' "$$SVC_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); c=(d.get('spec',{}).get('template',{}).get('spec',{}).get('containers') or d.get('template',{}).get('containers') or [{}])[0]; print(next((e.get('value','') for e in c.get('env',[]) if e.get('name')=='GENMEDIA_BUCKET'), ''))" 2>/dev/null || true)
+        SA_ARGS=()
+        if [ -n "$$RUN_SA" ]; then
+          SA_ARGS+=("--service-account=$$RUN_SA")
+        fi
+        ENV_VARS="PROJECT_ID=$PROJECT_ID,REGION=${_GCP_REGION},AUDIO_STEM_ORT_THREADS=4"
+        if [ -n "$$GENMEDIA_BUCKET" ]; then
+          ENV_VARS="$$ENV_VARS,GENMEDIA_BUCKET=$$GENMEDIA_BUCKET"
+        fi
+        gcloud run jobs deploy "${_STEM_JOB_NAME}" \
+          --image="${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA" \
+          --region="${_GCP_REGION}" \
+          --cpu=4 \
+          --memory=8Gi \
+          --max-retries=0 \
+          --task-timeout=900s \
+          --command="python" \
+          --args="-m,src.audios.stem_job_runner" \
+          --set-env-vars="$$ENV_VARS" \
+          "$${SA_ARGS[@]}" \
+          --quiet
+
 # BEST PRACTICE: Explicitly declare the image(s) built by this pipeline.
 # This integrates the build with Google Cloud's security features, like showing
 # vulnerability scan results in the Cloud Build UI.
@@ -61,6 +95,7 @@ images:
 # You can override these for manual runs.
 substitutions:
   _SERVICE_NAME: 'creative-studio-backend'
+  _STEM_JOB_NAME: 'creative-studio-stems-job'
   _REPO_NAME: 'cs-be-development-repo' # This matches local.artifact_repo_id
 
 options:

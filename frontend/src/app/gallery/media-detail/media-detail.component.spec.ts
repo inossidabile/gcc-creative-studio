@@ -95,6 +95,9 @@ describe('MediaDetailComponent', () => {
       bulkDelete: jasmine
         .createSpy('bulkDelete')
         .and.returnValue(of({deleted_count: 1})),
+      getItemLineage: jasmine
+        .createSpy('getItemLineage')
+        .and.returnValue(of({spine: [], derivatives: []})),
     };
 
     mockLoadingService = {
@@ -662,12 +665,12 @@ describe('MediaDetailComponent', () => {
       expect(historySection).not.toBeNull();
       const items = historySection?.querySelectorAll('li') ?? [];
       expect(items.length).toBe(2);
-      expect(items[0].textContent).toContain('1');
-      expect(items[0].textContent).toContain('Warm acoustic folk intro');
-      expect(items[1].textContent).toContain('2');
-      expect(items[1].textContent).toContain(
+      expect(items[0].textContent).toContain('2');
+      expect(items[0].textContent).toContain(
         'Add upright bass and brushed snare in chorus',
       );
+      expect(items[1].textContent).toContain('1');
+      expect(items[1].textContent).toContain('Warm acoustic folk intro');
     });
 
     it('separates originalPrompt, synthesizedPrompt, and negativePrompt for non-JSON audio items', () => {
@@ -689,6 +692,18 @@ describe('MediaDetailComponent', () => {
         'Make the chorus heavier with brass',
       );
       expect(origBox?.textContent).not.toContain('[0:15 - 0:30]');
+      expect(synthBox).not.toBeNull();
+      expect(synthBox?.textContent).not.toContain(
+        '[0:15 - 0:30] Heavy brass chorus.',
+      );
+
+      const toggleBtn = synthBox?.querySelector(
+        '[data-testid="synthesized-prompt-toggle"]',
+      ) as HTMLButtonElement | null;
+      expect(toggleBtn).not.toBeNull();
+      toggleBtn?.click();
+      fixture.detectChanges();
+
       expect(synthBox?.textContent).toContain(
         '[0:15 - 0:30] Heavy brass chorus.',
       );
@@ -789,6 +804,211 @@ describe('MediaDetailComponent', () => {
       expect(host.textContent).not.toContain('Aspect Ratio:');
       expect(host.textContent).not.toContain('Google Search:');
       expect(host.textContent).not.toContain('Watermark:');
+    });
+  });
+
+  describe('unified item lineage (Iteration History, Referenced Assets dedup, Derived Items)', () => {
+    it('renders multi-step cross-modal spine with clickable ancestor links and deleted tombstones', () => {
+      mockGalleryService.getItemLineage.and.returnValue(
+        of({
+          spine: [
+            {
+              itemType: 'source_asset',
+              id: 10,
+              mediaIndex: 0,
+              mimeType: 'image/jpeg',
+              prompt: 'Uploaded: bottle.jpg',
+              thumbnailUrl: 'https://example.com/a10.jpg',
+              deleted: false,
+            },
+            {
+              itemType: 'media_item',
+              id: 20,
+              mediaIndex: 2,
+              mimeType: 'image/png',
+              role: 'image_edit_source',
+              prompt: 'Place on marble pedestal',
+              thumbnailUrl: 'https://example.com/m20_2.png',
+              deleted: false,
+            },
+            {
+              itemType: 'media_item',
+              id: 30,
+              mediaIndex: 0,
+              mimeType: 'video/mp4',
+              role: 'start_frame',
+              prompt: 'Removed intermediate video',
+              deleted: true,
+            },
+            {
+              itemType: 'media_item',
+              id: 40,
+              mediaIndex: 0,
+              mimeType: 'video/mp4',
+              role: 'omni_edit_source',
+              prompt: 'Add golden hour light rays',
+              deleted: false,
+            },
+          ],
+          derivatives: [
+            {
+              itemType: 'media_item',
+              id: 55,
+              mediaIndex: 0,
+              mimeType: 'video/mp4',
+              role: 'omni_edit_source',
+              prompt: 'Add rain reflections',
+              thumbnailUrl: 'https://example.com/m55.jpg',
+              deleted: false,
+            },
+          ],
+        }),
+      );
+
+      const host = loadItem({
+        id: 40,
+        mimeType: 'video/mp4',
+        originalPrompt: 'Add golden hour light rays',
+      });
+
+      expect(mockGalleryService.getItemLineage).toHaveBeenCalledWith(
+        'media_item',
+        40,
+      );
+
+      const steps = host.querySelectorAll('[data-testid="lineage-spine-step"]');
+      expect(steps.length).toBe(4);
+
+      // Step 4 (top): Current version has no self-link and displays "Current"
+      expect(steps[0].textContent).toContain('4');
+      expect(steps[0].textContent).toContain('Omni Edit');
+      expect(steps[0].textContent).toContain('Current');
+      expect(
+        steps[0].querySelector('[data-testid="lineage-step-link"]'),
+      ).toBeNull();
+
+      // Step 3: Soft-deleted step renders tombstone instead of link
+      expect(steps[1].textContent).toContain('3');
+      expect(
+        steps[1].querySelector('[data-testid="lineage-step-deleted"]'),
+      ).not.toBeNull();
+      expect(
+        steps[1].querySelector('[data-testid="lineage-step-link"]'),
+      ).toBeNull();
+      expect(steps[1].textContent).toContain('Removed intermediate video');
+
+      // Step 2: Intermediate variation with clickable link & img_index query param
+      expect(steps[2].textContent).toContain('2');
+      expect(steps[2].textContent).toContain('Edited');
+      expect(steps[2].textContent).toContain('Image #20 · Var 3');
+      expect(
+        component.getLineageNodeQueryParams(
+          component.lineageSpineDescending()[2],
+        ),
+      ).toEqual({img_index: 2});
+
+      // Step 1 (bottom): Uploaded root asset
+      expect(steps[3].textContent).toContain('1');
+      expect(steps[3].textContent).toContain('Uploaded');
+      expect(steps[3].textContent).toContain('Asset #10');
+      expect(steps[3].textContent).toContain('Uploaded: bottle.jpg');
+
+      // Derived Items section renders active downstream child
+      const derivedSection = host.querySelector(
+        '[data-testid="derived-items-section"]',
+      );
+      expect(derivedSection).not.toBeNull();
+      const derivedTiles = host.querySelectorAll(
+        '[data-testid="derived-item-tile"]',
+      );
+      expect(derivedTiles.length).toBe(1);
+      expect(derivedTiles[0].textContent).toContain('Omni Edit');
+    });
+
+    it('deduplicates immediate primary parent from Referenced Assets while keeping secondary ingredients', () => {
+      mockGalleryService.getItemLineage.and.returnValue(
+        of({
+          spine: [
+            {
+              itemType: 'media_item',
+              id: 200,
+              mediaIndex: 1,
+              mimeType: 'video/mp4',
+              prompt: 'Original hero shot',
+              deleted: false,
+            },
+            {
+              itemType: 'media_item',
+              id: 300,
+              mediaIndex: 0,
+              mimeType: 'video/mp4',
+              role: 'omni_edit_source',
+              prompt: 'Add logo overlay',
+              deleted: false,
+            },
+          ],
+          derivatives: [],
+        }),
+      );
+
+      const host = loadItem({
+        id: 300,
+        mimeType: 'video/mp4',
+        enrichedSourceAssets: [
+          {
+            assetId: 91,
+            gcsUri: 'gs://b/logo.png',
+            presignedUrl: 'https://example.com/logo.png',
+            presignedThumbnailUrl: 'https://example.com/logo.png',
+            role: 'image_reference_asset',
+            mimeType: 'image/png',
+          },
+        ],
+        enrichedSourceMediaItems: [
+          {
+            mediaItemId: 200,
+            mediaIndex: 1, // Matches primary parent -> deduplicated!
+            gcsUri: 'gs://b/200_1.mp4',
+            presignedUrl: 'https://example.com/200_1.mp4',
+            presignedThumbnailUrl: 'https://example.com/200_1.jpg',
+            role: 'video_reference',
+            mimeType: 'video/mp4',
+          },
+        ],
+      });
+
+      expect(component.compositionSourceMediaItems().length).toBe(0);
+      expect(component.compositionSourceAssets().length).toBe(1);
+      const refSection = host.querySelector(
+        '[data-testid="referenced-assets-section"]',
+      );
+      expect(refSection).not.toBeNull();
+      expect(refSection?.textContent).toContain('Image Ref');
+      expect(refSection?.textContent).not.toContain('Video Ref');
+    });
+
+    it('falls back cleanly to legacy audioIterationSteps when getItemLineage errors', () => {
+      spyOn(console, 'warn');
+      mockGalleryService.getItemLineage.and.returnValue(
+        throwError(() => new Error('Network error')),
+      );
+
+      const host = loadItem({
+        id: 800,
+        originalPrompt: 'Add cello solo',
+        audioAnalysis: {
+          iteration_steps: ['Acoustic guitar intro', 'Add cello solo'],
+          tracks: [null],
+        },
+      });
+
+      const historySection = host.querySelector(
+        '[data-testid="audio-iteration-history-section"]',
+      );
+      expect(historySection).not.toBeNull();
+      expect(historySection?.getAttribute('data-lineage-mode')).toBe('legacy');
+      expect(historySection?.textContent).toContain('Acoustic guitar intro');
+      expect(historySection?.textContent).toContain('Add cello solo');
     });
   });
 });

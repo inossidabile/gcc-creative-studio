@@ -71,6 +71,12 @@ from src.common.storage_service import GcsService
 from src.folders.output_folder import resolve_output_folder_id
 from src.galleries.dto.gallery_response_dto import MediaItemResponse
 from src.images.repository.media_item_repository import MediaRepository
+from src.lineage.lineage_builder import ExplicitPrimarySpec
+from src.lineage.lineage_service import record_lineage_safely
+from src.lineage.schema.item_lineage_model import (
+    LineageItemTypeEnum,
+    LineageRoleEnum,
+)
 from src.source_assets.repository.source_asset_repository import (
     SourceAssetRepository,
 )
@@ -1019,6 +1025,45 @@ class AudioStemService:
             },
         )
         saved_item = await self.media_repo.create(media_to_create)
+        stem_primary = (
+            ExplicitPrimarySpec(
+                parent_type=LineageItemTypeEnum.MEDIA_ITEM,
+                parent_id=resolved.source_media_link.media_item_id,
+                parent_index=resolved.source_media_link.media_index,
+                role=LineageRoleEnum.AUDIO_STEM_SOURCE.value,
+                action_summary=stem_summary_step,
+            )
+            if resolved.source_media_link is not None
+            else (
+                ExplicitPrimarySpec(
+                    parent_type=LineageItemTypeEnum.SOURCE_ASSET,
+                    parent_id=resolved.source_asset_link.asset_id,
+                    parent_index=0,
+                    role=LineageRoleEnum.AUDIO_STEM_SOURCE.value,
+                    action_summary=stem_summary_step,
+                )
+                if resolved.source_asset_link is not None
+                else None
+            )
+        )
+        await record_lineage_safely(
+            getattr(self.media_repo, "db", None),
+            workspace_id=request_dto.workspace_id,
+            child_type=LineageItemTypeEnum.MEDIA_ITEM,
+            child_id=saved_item.id,
+            child_mime_type=MimeTypeEnum.AUDIO_MPEG,
+            source_assets=(
+                [resolved.source_asset_link]
+                if resolved.source_asset_link is not None
+                else None
+            ),
+            source_media_items=(
+                [resolved.source_media_link]
+                if resolved.source_media_link is not None
+                else None
+            ),
+            explicit_primary=stem_primary,
+        )
         presigned_urls = await asyncio.gather(
             *(
                 asyncio.to_thread(

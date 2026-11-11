@@ -31,7 +31,12 @@ import {
   map,
 } from 'rxjs/operators';
 import {environment} from '../../environments/environment';
-import {AudioAnalysis, MediaItem} from '../common/models/media-item.model';
+import {
+  AudioAnalysis,
+  ItemLineageResponse,
+  LineageItemType,
+  MediaItem,
+} from '../common/models/media-item.model';
 import {
   GalleryItem,
   PaginatedGalleryResponse,
@@ -218,6 +223,23 @@ export class GalleryService implements OnDestroy {
       );
     this.audioAnalysisCache.set(id, req$);
     return req$;
+  }
+
+  getItemLineage(
+    itemType: LineageItemType,
+    id: number,
+  ): Observable<ItemLineageResponse> {
+    const url = `${environment.backendURL}/gallery/lineage/${itemType}/${id}`;
+    return this.http.get<ItemLineageResponse>(url).pipe(
+      map(res => ({
+        spine: res?.spine ?? [],
+        derivatives: res?.derivatives ?? [],
+      })),
+      catchError(err => {
+        console.warn(`Failed to fetch lineage for ${itemType} ${id}`, err);
+        return of({spine: [], derivatives: []});
+      }),
+    );
   }
 
   getAsset(id: number): Observable<GalleryItem> {

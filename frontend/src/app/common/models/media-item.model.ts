@@ -35,6 +35,29 @@ export interface EnrichedSourceMediaItem extends SourceMediaItemLink {
   gcsUri: string;
 }
 
+export type LineageItemType = 'media_item' | 'source_asset';
+
+export interface LineageNode {
+  itemType: LineageItemType;
+  id: number;
+  mediaIndex: number;
+  mimeType?: string | null;
+  model?: string | null;
+  title?: string | null;
+  prompt?: string | null;
+  role?: string | null;
+  status?: string | null;
+  thumbnailUrl?: string | null;
+  previewUrl?: string | null;
+  deleted?: boolean;
+  createdAt?: string | null;
+}
+
+export interface ItemLineageResponse {
+  spine: LineageNode[];
+  derivatives: LineageNode[];
+}
+
 /**
  * Defines the states for a long-running generation job.
  */

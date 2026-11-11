@@ -54,6 +54,12 @@ from src.folders.agent_output_folder import resolve_agent_output_folder_id
 from src.folders.output_folder import resolve_output_folder_id
 from src.galleries.dto.gallery_response_dto import MediaItemResponse
 from src.images.repository.media_item_repository import MediaRepository
+from src.lineage.lineage_builder import ExplicitPrimarySpec
+from src.lineage.lineage_service import record_lineage_safely
+from src.lineage.schema.item_lineage_model import (
+    LineageItemTypeEnum,
+    LineageRoleEnum,
+)
 from src.multimodal.gemini_service import GeminiService, PromptTargetEnum
 from src.source_assets.repository.source_asset_repository import (
     SourceAssetRepository,
@@ -502,6 +508,17 @@ def _process_video_in_background(
                                         request_dto.workspace_id,
                                     )
                                 elif parent_media_item.raw_data:
+                                    parent_idx = max(
+                                        0,
+                                        int(
+                                            getattr(
+                                                request_dto,
+                                                "parent_media_index",
+                                                0,
+                                            )
+                                            or 0
+                                        ),
+                                    )
                                     interaction1_id = (
                                         parent_media_item.raw_data.get(
                                             "interaction_id"
@@ -510,6 +527,35 @@ def _process_video_in_background(
                                     signature1 = parent_media_item.raw_data.get(
                                         "signature"
                                     )
+                                    if not (interaction1_id and signature1):
+                                        interactions_list = (
+                                            parent_media_item.raw_data.get(
+                                                "interactions"
+                                            )
+                                        )
+                                        if (
+                                            isinstance(interactions_list, list)
+                                            and interactions_list
+                                        ):
+                                            entry = interactions_list[
+                                                (
+                                                    parent_idx
+                                                    if parent_idx
+                                                    < len(interactions_list)
+                                                    else 0
+                                                )
+                                            ]
+                                            if isinstance(entry, dict):
+                                                interaction1_id = (
+                                                    interaction1_id
+                                                    or entry.get(
+                                                        "interaction_id"
+                                                    )
+                                                )
+                                                signature1 = (
+                                                    signature1
+                                                    or entry.get("signature")
+                                                )
                                     if interaction1_id and signature1:
                                         is_turn_2 = True
                                     else:
@@ -540,8 +586,15 @@ def _process_video_in_background(
                                 )
 
                                 # Download parent video to read bytes
+                                safe_parent_idx = (
+                                    parent_idx
+                                    if 0
+                                    <= parent_idx
+                                    < len(parent_media_item.gcs_uris)
+                                    else 0
+                                )
                                 parent_blob_name = parent_media_item.gcs_uris[
-                                    0
+                                    safe_parent_idx
                                 ].replace(f"gs://{cfg.GENMEDIA_BUCKET}/", "")
                                 local_parent_path = (
                                     f"thumbnails/{parent_blob_name}"
@@ -1428,6 +1481,9 @@ class VeoService:
             user,
             request_dto.folder_id,
         )
+        all_source_media_items = (
+            request_dto.source_media_items or []
+        ) + source_media_items
         placeholder_item = MediaItemModel(
             workspace_id=request_dto.workspace_id,
             folder_id=folder_id,
@@ -1445,9 +1501,7 @@ class VeoService:
             composition=request_dto.composition,
             negative_prompt=request_dto.negative_prompt,
             duration_seconds=request_dto.duration_seconds,
-            source_media_items=(request_dto.source_media_items or [])
-            + source_media_items
-            or None,
+            source_media_items=all_source_media_items or None,
             source_assets=source_assets or None,
             gcs_uris=[],
             thumbnail_uris=[],
@@ -1458,6 +1512,37 @@ class VeoService:
 
         # 2. Save to DB to get the ID
         placeholder_item = await self.media_repo.create(placeholder_item)
+
+        omni_explicit_primary: ExplicitPrimarySpec | None = None
+        if (
+            request_dto.parent_media_item_id
+            and request_dto.reference_video
+            and request_dto.reference_video.type == "media_item"
+            and request_dto.reference_video.id
+            == request_dto.parent_media_item_id
+        ):
+            omni_explicit_primary = ExplicitPrimarySpec(
+                parent_type=LineageItemTypeEnum.MEDIA_ITEM,
+                parent_id=request_dto.parent_media_item_id,
+                parent_index=(
+                    request_dto.reference_video.index
+                    if request_dto.reference_video.index is not None
+                    else request_dto.parent_media_index
+                ),
+                role=LineageRoleEnum.OMNI_EDIT_SOURCE.value,
+                action_summary=request_dto.prompt,
+            )
+        await record_lineage_safely(
+            getattr(self.media_repo, "db", None),
+            workspace_id=request_dto.workspace_id,
+            child_type=LineageItemTypeEnum.MEDIA_ITEM,
+            child_id=placeholder_item.id,
+            child_mime_type=MimeTypeEnum.VIDEO_MP4,
+            user_prompt=request_dto.prompt,
+            source_assets=source_assets,
+            source_media_items=all_source_media_items,
+            explicit_primary=omni_explicit_primary,
+        )
 
         # 3. Submit background task
         executor.submit(
@@ -1555,6 +1640,15 @@ class VeoService:
 
         # 2. Save to DB
         placeholder_item = await self.media_repo.create(placeholder_item)
+        await record_lineage_safely(
+            getattr(self.media_repo, "db", None),
+            workspace_id=request_dto.workspace_id,
+            child_type=LineageItemTypeEnum.MEDIA_ITEM,
+            child_id=placeholder_item.id,
+            child_mime_type=MimeTypeEnum.VIDEO_MP4,
+            source_assets=source_assets,
+            source_media_items=source_media_items,
+        )
 
         # 3. Submit background task
         executor.submit(

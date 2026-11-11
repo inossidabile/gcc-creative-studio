@@ -114,6 +114,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
   referenceVideo: ReferenceVideo | null = null;
   referenceAudio: ReferenceAudio | null = null;
   parentMediaItemId: number | null = null;
+  parentMediaIndex = 0;
   currentMode = 'Text to Video';
   modes = [
     {value: 'Text to Video', icon: 'description', label: 'Text to Video'},
@@ -739,6 +740,12 @@ export class VideoComponent implements OnInit, AfterViewInit {
         this.referenceVideo?.type === 'media_item' &&
         this.referenceVideo.id === this.parentMediaItemId
           ? this.parentMediaItemId
+          : undefined,
+      parentMediaIndex:
+        this.currentMode === 'Ingredients to Video' &&
+        this.referenceVideo?.type === 'media_item' &&
+        this.referenceVideo.id === this.parentMediaItemId
+          ? (this.referenceVideo.index ?? this.parentMediaIndex)
           : undefined,
     };
 
@@ -1375,6 +1382,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
       this.currentMode = 'Ingredients to Video';
       if (remixState.parentMediaItemId !== undefined) {
         this.parentMediaItemId = remixState.parentMediaItemId;
+        this.parentMediaIndex = remixState.parentMediaIndex ?? 0;
       }
     }
 
@@ -1418,6 +1426,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
 
   handleEditWithOmni(event: {mediaItem: MediaItem; selectedIndex: number}) {
     this.parentMediaItemId = event.mediaItem.id;
+    this.parentMediaIndex = event.selectedIndex ?? 0;
     this.currentMode = 'Ingredients to Video';
     this.selectedMode.set('Ingredients to Video');
 
@@ -1496,6 +1505,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
       if (!result) return;
 
       this.parentMediaItemId = null;
+      this.parentMediaIndex = 0;
       const res = Array.isArray(result) ? result[0] : result;
       if ('gcsUri' in res) {
         this.referenceVideo = {
@@ -1526,6 +1536,7 @@ export class VideoComponent implements OnInit, AfterViewInit {
   clearReferenceVideo(event: Event): void {
     event.stopPropagation();
     this.parentMediaItemId = null;
+    this.parentMediaIndex = 0;
     this.referenceVideo = null;
     this.saveState();
   }

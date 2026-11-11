@@ -84,6 +84,7 @@ export type VeoRequest = {
   referenceVideo?: AssetReferenceDto | null;
   referenceAudio?: AssetReferenceDto | null;
   parentMediaItemId?: number | null;
+  parentMediaIndex?: number;
   resolution?: '1K' | '2K' | '4K';
 };
 

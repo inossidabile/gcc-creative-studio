@@ -226,30 +226,39 @@
                 >{{ isPromptExpanded ? 'Show less' : 'Show more' }}</button>
               </div>
 
-              <div *ngIf="synthesizedPrompt" data-testid="synthesized-prompt-box">
-                <div class="flex items-center justify-between mb-1">
-                  <strong class="font-semibold text-gray-400">Synthesized Prompt:</strong>
+              <div
+                *ngIf="synthesizedPrompt"
+                data-testid="synthesized-prompt-box"
+                class="rounded-md bg-gray-800/60 border border-gray-700/70 overflow-hidden"
+              >
+                <div class="flex items-center justify-between gap-2 px-3 py-2">
                   <button
-                    mat-icon-button
                     type="button"
-                    (click)="copyPromptText(synthesizedPrompt)"
+                    data-testid="synthesized-prompt-toggle"
+                    (click)="toggleSynthesizedPromptExpansion()"
+                    [attr.aria-expanded]="isSynthesizedPromptExpanded"
+                    class="flex-1 flex items-center gap-1.5 text-left text-sm font-semibold text-gray-300 hover:text-white transition-colors min-w-0"
+                  >
+                    <mat-icon
+                      class="!text-[18px] !w-[18px] !h-[18px] leading-none flex items-center justify-center text-gray-400 transition-transform duration-150 flex-shrink-0"
+                      [class.rotate-90]="isSynthesizedPromptExpanded"
+                    >chevron_right</mat-icon>
+                    <span class="truncate">Synthesized Prompt</span>
+                  </button>
+                  <button
+                    type="button"
+                    (click)="copyPromptText(synthesizedPrompt); $event.stopPropagation()"
                     matTooltip="Copy synthesized prompt"
                     aria-label="Copy synthesized prompt"
-                    class="!w-7 !h-7 text-gray-400 hover:text-white"
+                    class="inline-flex items-center justify-center w-7 h-7 rounded hover:bg-gray-700/80 text-gray-400 hover:text-white transition-colors flex-shrink-0"
                   >
-                    <mat-icon class="!text-base !w-4 !h-4">content_copy</mat-icon>
+                    <mat-icon class="!text-[16px] !w-4 !h-4 leading-none flex items-center justify-center">content_copy</mat-icon>
                   </button>
                 </div>
                 <p
-                  class="p-3 rounded-md bg-gray-800/80 border border-gray-700/70 text-gray-300 text-xs whitespace-pre-line break-words leading-relaxed"
-                  [class.line-clamp-4]="!isSynthesizedPromptExpanded"
+                  *ngIf="isSynthesizedPromptExpanded"
+                  class="px-3 py-2.5 border-t border-gray-700/70 bg-gray-800/80 text-gray-300 text-xs whitespace-pre-line break-words leading-relaxed !m-0"
                 >{{ synthesizedPrompt }}</p>
-                <button
-                  *ngIf="isExpandablePrompt(synthesizedPrompt)"
-                  type="button"
-                  (click)="toggleSynthesizedPromptExpansion()"
-                  class="text-blue-400 hover:text-blue-300 text-sm mt-1"
-                >{{ isSynthesizedPromptExpanded ? 'Show less' : 'Show more' }}</button>
               </div>
 
               <div *ngIf="!promptJson && mediaItem.negativePrompt" data-testid="negative-prompt-box">
@@ -258,19 +267,21 @@
               </div>
             </section>
 
-            <!-- Audio Iteration History Section -->
+            <!-- Universal Iteration History Section -->
             <section
               class="space-y-3"
-              *ngIf="audioIterationSteps.length > 0"
+              *ngIf="lineageSpineDescending().length > 1 || audioIterationStepsDescending().length > 0"
               data-testid="audio-iteration-history-section"
+              attr.data-lineage-mode="{{ lineageSpineDescending().length > 1 ? 'graph' : 'legacy' }}"
             >
               <h3 class="text-lg font-semibold border-b border-gray-700 pb-1">Iteration History</h3>
-              <ol class="space-y-2">
+              <ol *ngIf="lineageSpineDescending().length > 1; else legacyAudioIterationList" reversed class="space-y-2">
                 <li
-                  *ngFor="let step of audioIterationSteps; let idx = index; let last = last"
+                  *ngFor="let node of lineageSpineDescending(); trackBy: trackLineageNode; let idx = index; let first = first; let last = last"
+                  data-testid="lineage-spine-step"
                   class="flex items-start gap-2.5 p-2.5 rounded-md border text-xs leading-relaxed"
                   [ngClass]="
-                    last
+                    first
                       ? 'bg-blue-950/30 border-blue-500/40 text-gray-100'
                       : 'bg-gray-800/60 border-gray-700/70 text-gray-300'
                   "
@@ -278,14 +289,85 @@
                   <span
                     class="w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 mt-0.5"
                     [ngClass]="
-                      last
+                      first
                         ? 'bg-blue-500/30 text-blue-200 border border-blue-400/50'
                         : 'bg-gray-700 text-gray-300'
                     "
-                  >{{ idx + 1 }}</span>
-                  <span class="whitespace-pre-line break-words flex-1">{{ step }}</span>
+                  >{{ lineageSpineDescending().length - idx }}</span>
+                  <div class="flex-1 min-w-0 space-y-1.5">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <span
+                        class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+                        [ngClass]="
+                          first
+                            ? 'bg-blue-500/20 text-blue-200 border border-blue-400/40'
+                            : 'bg-gray-700/80 text-gray-300'
+                        "
+                      >{{ getLineageStepBadge(node, last) }}</span>
+
+                      <a
+                        *ngIf="!first && !node.deleted"
+                        [routerLink]="getLineageNodeRoute(node)"
+                        [queryParams]="getLineageNodeQueryParams(node)"
+                        data-testid="lineage-step-link"
+                        class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-neutral-900/80 hover:bg-neutral-700 border border-gray-600/70 text-[11px] text-blue-300 hover:text-blue-200 transition-colors max-w-full"
+                      >
+                        <img
+                          *ngIf="!isAudioLineageNode(node) && (node.thumbnailUrl || node.previewUrl)"
+                          [src]="node.thumbnailUrl || node.previewUrl"
+                          alt=""
+                          class="w-4 h-4 rounded-sm object-cover flex-shrink-0"
+                        />
+                        <mat-icon
+                          *ngIf="isAudioLineageNode(node)"
+                          class="!text-xs !w-3.5 !h-3.5 text-blue-300 flex-shrink-0"
+                        >graphic_eq</mat-icon>
+                        <span class="truncate">{{ getLineageItemLabel(node) }}</span>
+                        <mat-icon class="!text-xs !w-3 !h-3 opacity-80 flex-shrink-0">arrow_outward</mat-icon>
+                      </a>
+
+                      <span
+                        *ngIf="first"
+                        class="text-[10px] font-medium text-blue-300"
+                      >Current</span>
+
+                      <span
+                        *ngIf="!first && node.deleted"
+                        data-testid="lineage-step-deleted"
+                        class="text-[10px] italic text-gray-500"
+                      >Source removed</span>
+                    </div>
+
+                    <p class="whitespace-pre-line break-words !m-0">
+                      {{ node.prompt || node.title || 'Derived step' }}
+                    </p>
+                  </div>
                 </li>
               </ol>
+
+              <ng-template #legacyAudioIterationList>
+                <ol reversed class="space-y-2">
+                  <li
+                    *ngFor="let step of audioIterationStepsDescending(); trackBy: trackByIndex; let idx = index; let first = first"
+                    class="flex items-start gap-2.5 p-2.5 rounded-md border text-xs leading-relaxed"
+                    [ngClass]="
+                      first
+                        ? 'bg-blue-950/30 border-blue-500/40 text-gray-100'
+                        : 'bg-gray-800/60 border-gray-700/70 text-gray-300'
+                    "
+                  >
+                    <span
+                      class="w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 mt-0.5"
+                      [ngClass]="
+                        first
+                          ? 'bg-blue-500/30 text-blue-200 border border-blue-400/50'
+                          : 'bg-gray-700 text-gray-300'
+                      "
+                    >{{ audioIterationStepsDescending().length - idx }}</span>
+                    <span class="whitespace-pre-line break-words flex-1">{{ step }}</span>
+                  </li>
+                </ol>
+              </ng-template>
             </section>
 
             <!-- Per-Take Acoustic Musical Profile Section -->
@@ -332,10 +414,10 @@
               </div>
             </section>
 
-            <!-- Source Assets -->
+            <!-- Composition / Referenced Assets -->
             <section
               class="space-y-3"
-              *ngIf="mediaItem.enrichedSourceAssets?.length || mediaItem.enrichedSourceMediaItems?.length"
+              *ngIf="compositionSourceAssets().length || compositionSourceMediaItems().length"
               data-testid="referenced-assets-section"
             >
               <h3 class="text-lg font-semibold border-b border-gray-700">Referenced Assets</h3>
@@ -361,7 +443,7 @@
               </ng-template>
               <div class="flex flex-wrap gap-2">
                 <a
-                  *ngFor="let asset of mediaItem.enrichedSourceAssets"
+                  *ngFor="let asset of compositionSourceAssets()"
                   [routerLink]="['/asset-detail', getSourceAssetRouteId(asset)]"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -371,7 +453,7 @@
                   <ng-container *ngTemplateOutlet="refTileContent; context: {$implicit: asset, showTrack: false}"></ng-container>
                 </a>
                 <a
-                  *ngFor="let source of mediaItem.enrichedSourceMediaItems"
+                  *ngFor="let source of compositionSourceMediaItems()"
                   [routerLink]="['/gallery', source.mediaItemId]"
                   [queryParams]="{img_index: source.mediaIndex}"
                   target="_blank"
@@ -380,6 +462,43 @@
                   class="relative w-20 h-20 rounded-md overflow-hidden hover:opacity-85 transition-opacity cursor-pointer border border-gray-700 bg-neutral-800 flex flex-col items-center justify-center"
                 >
                   <ng-container *ngTemplateOutlet="refTileContent; context: {$implicit: source, showTrack: true}"></ng-container>
+                </a>
+              </div>
+            </section>
+
+            <!-- Derived Items Section -->
+            <section
+              class="space-y-3"
+              *ngIf="derivedItems().length > 0"
+              data-testid="derived-items-section"
+            >
+              <h3 class="text-lg font-semibold border-b border-gray-700">Derived Items</h3>
+              <div class="flex flex-wrap gap-2">
+                <a
+                  *ngFor="let deriv of derivedItems(); trackBy: trackLineageNode"
+                  [routerLink]="getLineageNodeRoute(deriv)"
+                  [queryParams]="getLineageNodeQueryParams(deriv)"
+                  [matTooltip]="getDerivativeTooltip(deriv)"
+                  data-testid="derived-item-tile"
+                  class="relative w-20 h-20 rounded-md overflow-hidden hover:opacity-85 transition-opacity cursor-pointer border border-gray-700 bg-neutral-800 flex flex-col items-center justify-center"
+                >
+                  <ng-container *ngIf="isAudioLineageNode(deriv); else nonAudioDerivative">
+                    <mat-icon class="text-blue-300 !text-2xl !h-6 !w-6 flex items-center justify-center">graphic_eq</mat-icon>
+                    <span class="mt-1 text-[10px] font-medium text-blue-200 leading-tight text-center px-1 truncate w-full">
+                      {{ getDerivativeRoleBadge(deriv) }}
+                    </span>
+                  </ng-container>
+                  <ng-template #nonAudioDerivative>
+                    <img
+                      *ngIf="deriv.thumbnailUrl || deriv.previewUrl"
+                      [src]="deriv.thumbnailUrl || deriv.previewUrl"
+                      alt="Derived Item"
+                      class="w-full h-full object-cover"
+                    />
+                    <span
+                      class="absolute inset-x-0 bottom-0 bg-black/75 text-[10px] text-gray-200 text-center py-0.5 truncate px-1"
+                    >{{ getDerivativeRoleBadge(deriv) }}</span>
+                  </ng-template>
                 </a>
               </div>
             </section>
